@@ -243,7 +243,7 @@ class RadarDataset(Dataset):
                 content = f.read()
             match = re.search(r'"Translation_Radar_to_Lidar":\s*([-\d\s.]+)\s*,', content)
             if match:
-                vals = np.fromstring(match.group(1).strip(), sep=' ')
+                vals = np.array(match.group(1).strip().split(), dtype=float)
                 if len(vals) >= 1:
                     shift_bins = -int(round(vals[0] / (25.6 / 256)))
                     if shift_bins != 0:
@@ -287,7 +287,7 @@ class RadarDataset(Dataset):
             match = re.search(r'"BoundingBox":([\d\s.-]+),', content)
             if not match:
                 return label_tensor
-            corners = np.fromstring(match.group(1), sep=' ').reshape(-1, 3)
+            corners = np.array(match.group(1).split(), dtype=float).reshape(-1, 3)
             x, y, z = corners[:, 0], corners[:, 1], corners[:, 2]
             R_BINS, A_BINS = 256, 256
             MAX_RANGE, FOV_RAD, PHI_MAX = 25.6, np.deg2rad(180.0), 0.5236

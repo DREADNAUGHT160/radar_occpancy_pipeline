@@ -54,21 +54,21 @@ def parse_calibration(txt_path):
     K = np.eye(3)
     match = re.search(r'"PCO_Intrinsic":\s*([\d\s.-]+),', content)
     if match:
-        vals = np.fromstring(match.group(1), sep=' ')
+        vals = np.array(match.group(1).split(), dtype=float)
         if len(vals) >= 9:
             K = vals[:9].reshape(3, 3)
 
     r_t = np.zeros(6)
     match = re.search(r'"Lidar_to_PCO":\s*([\d\s.-]+),', content)
     if match:
-        vals = np.fromstring(match.group(1), sep=' ')
+        vals = np.array(match.group(1).split(), dtype=float)
         if len(vals) >= 6:
             r_t = vals[:6]
 
     radar_to_lidar = np.zeros(3)
     match = re.search(r'"Translation_Radar_to_Lidar":\s*([-\d\s.]+)\s*,', content)
     if match:
-        vals = np.fromstring(match.group(1).strip(), sep=' ')
+        vals = np.array(match.group(1).strip().split(), dtype=float)
         if len(vals) >= 3:
             radar_to_lidar = vals[:3]
         elif len(vals) >= 1:
@@ -164,7 +164,15 @@ def main():
     cam_cfg   = inf.get('camera', {}).get(ds_name, {})
     base_dir  = config['dataset'].get('base_dir', '')
 
-    # Resolve all paths: CLI arg > config > empty
+    # Resolve radar_dir first — used by pco_dir / label_txt_dir fallbacks below
+    if ds_name and base_dir:
+        radar_dir = os.path.join(base_dir, ds_name)
+    elif ds_name:
+        radar_dir = ds_name
+    else:
+        radar_dir = config['dataset'].get('radar_dir', '')
+
+    # Resolve all paths: CLI arg > config > auto-derive from radar_dir
     checkpoint    = args.checkpoint    or inf.get('checkpoint') or _get_latest_checkpoint(config['logging']['output_dir'])
     saveroad_dir  = args.saveroad_dir  or inf.get('saveroad_dir', '')
     sf = config['dataset'].get('subfolders', {})
@@ -172,14 +180,6 @@ def main():
     label_txt_dir = args.label_txt_dir or cam_cfg.get('label_txt_dir', '') or os.path.join(radar_dir, sf.get('calib', 'calib'))
     out_dir       = args.out_dir       or os.path.join(inf.get('out_dir', 'verification_output'), ds_name, 'camera_projection')
     threshold_cfg = args.threshold     if args.threshold is not None else inf.get('threshold')
-
-    # Resolve radar_dir
-    if ds_name and base_dir:
-        radar_dir = os.path.join(base_dir, ds_name)
-    elif ds_name:
-        radar_dir = ds_name
-    else:
-        radar_dir = config['dataset'].get('radar_dir', '')
 
     if not saveroad_dir:
         print("ERROR: saveroad_dir not set. Add it to config.inference.saveroad_dir or pass --saveroad_dir.")
