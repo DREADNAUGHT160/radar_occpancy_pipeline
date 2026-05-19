@@ -1,7 +1,7 @@
 experiment_name: smoke_test
 
 dataset:
-  base_dir: ''   # set to your dataset directory
+  base_dir: ''   # e.g. D:/dataset
   auto_split:
     enabled: false
     train_ratio: 0.70
@@ -48,7 +48,7 @@ training:
 logging:
   log_interval: 1
   save_every: 1
-  output_dir: checkpoints_smoke
+  output_dir: checkpoints_smoke   # e.g. E:/checkpoints_smoke
   tensorboard: false
   save_inference_images: false
   visualization_split: test
@@ -57,4 +57,4 @@ inference:
   checkpoint: ''
   threshold: null
   out_dir: smoke_test_output
-  saveroad_dir: ''   # optional: path to SAVEROAD_DataLoader toolkit for camera projection
+  saveroad_dir: ''   # optional, e.g. D:/thesis data/thesis/SAVEROAD_DataLoader

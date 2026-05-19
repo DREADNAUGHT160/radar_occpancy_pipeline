@@ -1,9 +1,9 @@
 experiment_name: radar_occupancy_experiment
 dataset:
-  raw_data_dir: ''   # set to root folder of raw collections (e.g. E:/DataCollectionApril2022)
+  raw_data_dir: ''   # e.g. E:/DataCollectionApril2022_11_03
   # base_dir is where prepare_dataset.py writes prepared data and where
   # train/predict look for it. Each RC folder lives at base_dir/<RC_NAME>/.
-  base_dir: ''       # set to where prepared dataset will be written (e.g. D:/dataset)
+  base_dir: ''       # e.g. D:/dataset
 
   # Subfolder names inside each RC folder. Change these if your data uses
   # different names (e.g. radar_power instead of rad_power).
@@ -82,7 +82,7 @@ training:
   loss: weighted_bce
   pos_weight: 10.0
 logging:
-  output_dir: checkpoints   # relative path is fine; use absolute (e.g. E:/checkpoints) for large runs
+  output_dir: checkpoints   # e.g. E:/checkpoints
   tensorboard: true
   save_inference_images: true
   visualization_split: test
@@ -90,4 +90,4 @@ inference:
   checkpoint: ''
   threshold: null
   out_dir: verification_output
-  saveroad_dir: ''   # optional: path to SAVEROAD_DataLoader toolkit root for camera projection
+  saveroad_dir: ''   # optional, e.g. D:/thesis data/thesis/SAVEROAD_DataLoader
