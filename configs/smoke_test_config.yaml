@@ -1,0 +1,60 @@
+experiment_name: smoke_test
+
+dataset:
+  base_dir: D:/dataset
+  auto_split:
+    enabled: false
+    train_ratio: 0.70
+    val_ratio: 0.15
+    seed: 42
+  train: [RC013, RC014]
+  val:   [RC013]
+  test:  [RC014]
+  batch_size: 1
+  num_workers: 0
+  augmentations: false
+  sync_threshold_ms: 100
+  filter_bboxes: false
+  label_text_dir: ''
+  normalization:
+    enable: true
+    auto_normalization: false
+    power_log_transform: true
+    power_min_val: -100.0
+    power_max_val: -31.7
+    normalize_elevation: false
+    elevation_max_angle: 0.7854
+    no_clipping: false
+    mask_elevation: false
+    power_threshold: -60.0
+
+model:
+  name: resnet18_radar
+  in_channels: 2
+  doppler_depth: 128
+  use_full_doppler: false
+  encoder_out_channels: 64
+  num_classes: 64
+
+training:
+  epochs: 2
+  lr: 0.001
+  optimizer: Adam
+  weight_decay: 1e-4
+  scheduler: CosineAnnealingLR
+  loss: weighted_bce
+  pos_weight: 10.0
+
+logging:
+  log_interval: 1
+  save_every: 1
+  output_dir: E:/checkpoints_smoke
+  tensorboard: false
+  save_inference_images: false
+  visualization_split: test
+
+inference:
+  checkpoint: ''
+  threshold: null
+  out_dir: smoke_test_output
+  saveroad_dir: 'D:/thesis data/thesis/SAVEROAD_DataLoader'

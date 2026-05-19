@@ -1,0 +1,93 @@
+experiment_name: radar_occupancy_experiment
+dataset:
+  raw_data_dir: E:/DataCollectionApril2022_11_03
+  # base_dir is where prepare_dataset.py writes prepared data and where
+  # train/predict look for it. Each RC folder lives at base_dir/<RC_NAME>/.
+  base_dir: D:/dataset
+
+  # Subfolder names inside each RC folder. Change these if your data uses
+  # different names (e.g. radar_power instead of rad_power).
+  subfolders:
+    rad_power: rad_power   # radar power .npy cubes
+    rad_elev:  rad_elev    # radar elevation .npy cubes
+    labels:    labels      # occupancy label .npy files (from generate_lidar_labels.py)
+    pco:       pco         # camera images (.png)
+    calib:     calib       # calibration .txt files (PCO_Intrinsic, Lidar_to_PCO)
+  auto_split:
+    enabled: false        # set true to auto-discover RC folders and split randomly
+    train_ratio: 0.70
+    val_ratio: 0.15
+    # test gets the remainder (1 - train_ratio - val_ratio)
+    seed: 42
+  train: [RC013, RC014]
+  val:   [RC013]
+  test:  [RC014]
+  batch_size: 1
+  num_workers: 0
+  augmentations: true
+  sync_threshold_ms: 100
+  filter_bboxes: false
+  label_text_dir: ''
+  normalization:
+    enable: true
+    auto_normalization: false
+    power_log_transform: true
+    power_min_val: -100.0
+    power_max_val: -31.7
+    normalize_elevation: false
+    elevation_max_angle: 0.7854
+    no_clipping: false
+    mask_elevation: false
+    power_threshold: -60.0
+model:
+  name: resnet18_radar
+  in_channels: 2
+  doppler_depth: 128
+  use_full_doppler: false
+  encoder_out_channels: 64
+  num_classes: 64
+training:
+  epochs: 10
+  lr: 0.001
+  optimizer: Adam
+  weight_decay: 1e-4
+  scheduler: CosineAnnealingLR
+
+  # ── Loss function ──────────────────────────────────────────────────────────
+  # Choose one of the following loss options and set the matching parameters.
+  #
+  # loss: weighted_bce        Standard BCE with a positive-class weight.
+  #   pos_weight: 10.0          Penalises missed occupancy N× harder than FP.
+  #                             Increase if predictions are too sparse.
+  #
+  # loss: bce                 Plain BCE, no weighting.
+  #
+  # loss: focal               Focal loss — down-weights easy background voxels.
+  #   focal_alpha: 0.25         Balance factor for foreground class.
+  #   focal_gamma: 2.0          Focus strength; higher = harder examples only.
+  #
+  # loss: focal_dice          Focal + Dice combined.
+  #   focal_alpha: 0.25
+  #   focal_gamma: 2.0
+  #   dice_weight: 0.5          Weight of Dice term (total = focal + dice_weight * dice).
+  #
+  # loss: bce_dice            Weighted BCE + Dice combined.
+  #   pos_weight: 10.0
+  #   dice_weight: 0.5
+  #
+  # loss: tversky             Asymmetric Dice — push recall higher than precision.
+  #   tversky_alpha: 0.3        FP penalty weight (lower = tolerate more FP).
+  #   tversky_beta:  0.7        FN penalty weight (higher = fewer missed voxels).
+  # ──────────────────────────────────────────────────────────────────────────
+  loss: weighted_bce
+  pos_weight: 10.0
+logging:
+  output_dir: E:/checkpoints
+  tensorboard: true
+  save_inference_images: true
+  visualization_split: test
+inference:
+  checkpoint: ''
+  threshold: null
+  out_dir: verification_output
+  saveroad_dir: 'D:/thesis data/thesis/SAVEROAD_DataLoader'
