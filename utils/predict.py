@@ -133,80 +133,43 @@ def _get_latest_checkpoint(output_dir):
     raise FileNotFoundError(f"No checkpoint found in {output_dir}")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config',     required=True,
-                        help='Path to config YAML')
-    parser.add_argument('--dataset',    required=True,
-                        help='Dataset folder name (e.g. RC002). Must be inside config.dataset.base_dir')
-    parser.add_argument('--checkpoint', default=None,
-                        help='Path to .pth checkpoint. Defaults to config.inference.checkpoint or latest run.')
-    parser.add_argument('--out_dir',    default=None,
-                        help='Output directory. Defaults to config.inference.out_dir/<dataset>')
-    parser.add_argument('--threshold',  type=float, default=None,
-                        help='Occupancy threshold. Defaults to config.inference.threshold or dynamic midpoint.')
-    parser.add_argument('--saveroad_dir',  default=None,
-                        help='Override config.inference.saveroad_dir')
-    parser.add_argument('--pco_dir',       default=None,
-                        help='Override config.inference.camera.<dataset>.pco_dir')
-    parser.add_argument('--label_txt_dir', default=None,
-                        help='Override config.inference.camera.<dataset>.label_txt_dir')
-    args = parser.parse_args()
+def _predict_dataset(dataset_name, model, device, config, args, checkpoint,
+                     saveroad_dir, project_points, threshold):
+    """Run inference on a single dataset folder and save all outputs."""
+    inf      = config.get('inference', {})
+    base_dir = config['dataset'].get('base_dir', '')
+    sf       = config['dataset'].get('subfolders', {})
+    cam_cfg  = inf.get('camera', {}).get(dataset_name, {})
 
-    with open(args.config, encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-
-    inf        = config.get('inference', {})
-    cam_cfg    = inf.get('camera', {}).get(args.dataset, {})
-    base_dir   = config['dataset'].get('base_dir', '')
-    radar_dir  = os.path.join(base_dir, args.dataset) if base_dir else args.dataset
-
-    # Resolve all paths: CLI arg > config > empty
-    checkpoint    = args.checkpoint    or inf.get('checkpoint') or _get_latest_checkpoint(config['logging']['output_dir'])
-    out_dir       = args.out_dir       or os.path.join(inf.get('out_dir', 'verification_output'), args.dataset)
-    threshold     = args.threshold     if args.threshold is not None else inf.get('threshold')
-    saveroad_dir  = args.saveroad_dir  or inf.get('saveroad_dir', '')
-    sf = config['dataset'].get('subfolders', {})
+    radar_dir     = os.path.join(base_dir, dataset_name) if base_dir else dataset_name
+    out_dir       = args.out_dir or os.path.join(inf.get('out_dir', 'verification_output'), dataset_name)
+    out_dir       = os.path.abspath(out_dir)
     pco_dir       = args.pco_dir       or cam_cfg.get('pco_dir', '')       or os.path.join(radar_dir, sf.get('pco',   'pco'))
     label_txt_dir = args.label_txt_dir or cam_cfg.get('label_txt_dir', '') or os.path.join(radar_dir, sf.get('calib', 'calib'))
 
-    out_dir = os.path.abspath(out_dir)
+    print(f"\n── Dataset: {dataset_name} ({'  ' + radar_dir})")
+    print(f"   Output : {out_dir}")
 
-    print(f"Dataset  : {radar_dir}")
-    print(f"Checkpoint: {checkpoint}")
-    print(f"Output   : {out_dir}")
-
-    # Optional camera projection
-    project_points = None
-    if saveroad_dir and pco_dir and label_txt_dir:
-        sys.path.insert(0, saveroad_dir)
-        from tools import project_points_v2_withPC as project_points
-        print("Camera projection: enabled")
+    if project_points:
+        print("   Camera projection: enabled")
     else:
-        missing = [k for k, v in [('saveroad_dir', saveroad_dir), ('pco_dir', pco_dir), ('label_txt_dir', label_txt_dir)] if not v]
-        print(f"Camera projection: disabled (missing in config.inference: {', '.join(missing)})")
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model  = ModelFactory.get_model(config).to(device)
-    model.load_state_dict(torch.load(checkpoint, map_location=device))
-    model.eval()
+        missing = [k for k, v in [('saveroad_dir', saveroad_dir),
+                                   ('pco_dir', pco_dir), ('label_txt_dir', label_txt_dir)] if not v]
+        print(f"   Camera projection: disabled (missing: {', '.join(missing)})")
 
     power_files = sorted(glob.glob(os.path.join(radar_dir, sf.get('rad_power', 'rad_power'), '*.npy')))
-    print(f"Found {len(power_files)} radar frames")
+    print(f"   Radar frames  : {len(power_files)}")
 
-    # Pre-index label files by timestamp (ms) for GT overlay
     label_dir   = os.path.join(radar_dir, sf.get('labels', 'labels'))
     label_files = sorted(glob.glob(os.path.join(label_dir, '*.npy')))
-    label_ts    = np.array([_extract_ts_ms(p) for p in label_files]) \
-                  if label_files else np.array([])
-    print(f"Found {len(label_files)} label files for GT overlay")
+    label_ts    = np.array([_extract_ts_ms(p) for p in label_files]) if label_files else np.array([])
+    print(f"   Label files   : {len(label_files)}")
 
-    # Pre-index calibration files by timestamp
     txt_ts_arr, txt_files = np.array([]), []
     if project_points and label_txt_dir:
         txt_files  = sorted(glob.glob(os.path.join(label_txt_dir, '*.txt')))
         txt_ts_arr = np.array([_extract_ts_ms(p) for p in txt_files])
-        print(f"Found {len(txt_files)} calibration files")
+        print(f"   Calib files   : {len(txt_files)}")
 
     plot_dir        = os.path.join(out_dir, 'prediction_plots')
     thresh_plot_dir = os.path.join(out_dir, 'prediction_plots_thresh')
@@ -216,10 +179,7 @@ def main():
     if project_points:
         os.makedirs(proj_dir, exist_ok=True)
 
-    xticks     = np.linspace(0, 255, 7)
-    xlabels_az = np.round(np.degrees(np.arcsin(np.linspace(-1, 1, 7)))).astype(int)
-
-    for power_path in tqdm(power_files):
+    for power_path in tqdm(power_files, desc=dataset_name):
         fname     = os.path.basename(power_path)
         ts        = fname.replace('.npy', '')
         elev_path = os.path.join(radar_dir, sf.get('rad_elev', 'rad_elev'), fname)
@@ -364,7 +324,7 @@ def main():
             plt.colorbar(im, ax=ax)
 
             plt.suptitle(
-                f"{args.dataset} | ts={ts}\n{metric_str}",
+                f"{dataset_name} | ts={ts}\n{metric_str}",
                 fontsize=14
             )
             plt.tight_layout()
@@ -414,7 +374,7 @@ def main():
         cbar = plt.colorbar(ax.scatter([], [], c=[], cmap='turbo', vmin=0, vmax=1),
                             ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label('Prediction Confidence')
-        ax.set_title(f"{args.dataset} Camera Projection | ts={ts}", fontsize=14)
+        ax.set_title(f"{dataset_name} Camera Projection | ts={ts}", fontsize=14)
         ax.axis('off')
         plt.tight_layout()
         plt.savefig(os.path.join(proj_dir, f'proj_{ts}.png'), dpi=150, bbox_inches='tight')
@@ -423,6 +383,68 @@ def main():
     print(f"\nDone.\n  Plots: {plot_dir}")
     if project_points:
         print(f"  Projections: {proj_dir}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Run occupancy inference on test split (or a named dataset).')
+    parser.add_argument('--config',        required=True,
+                        help='Path to train_config.yaml')
+    parser.add_argument('--dataset',       default=None,
+                        help='Single dataset to run (e.g. RC014). '
+                             'Defaults to all datasets in config.dataset.test.')
+    parser.add_argument('--checkpoint',    default=None,
+                        help='Path to .pth checkpoint. '
+                             'Defaults to config.inference.checkpoint or latest run.')
+    parser.add_argument('--out_dir',       default=None,
+                        help='Output root. Defaults to config.inference.out_dir/<dataset>.')
+    parser.add_argument('--pco_dir',       default=None,
+                        help='Camera image folder (overrides config for this run).')
+    parser.add_argument('--label_txt_dir', default=None,
+                        help='Calibration .txt folder (overrides config for this run).')
+    parser.add_argument('--saveroad_dir',  default=None,
+                        help='Path to SAVEROAD_DataLoader toolkit.')
+    parser.add_argument('--threshold',     type=float, default=None,
+                        help='Occupancy threshold for camera projection. '
+                             'Defaults to config.inference.threshold or dynamic midpoint.')
+    args = parser.parse_args()
+
+    with open(args.config, encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
+    inf      = config.get('inference', {})
+    datasets = [args.dataset] if args.dataset else config['dataset'].get('test', [])
+    if not datasets:
+        print("ERROR: No test datasets configured. "
+              "Set dataset.test in config or pass --dataset.")
+        return
+
+    print(f"Test datasets: {datasets}")
+
+    checkpoint   = (args.checkpoint or inf.get('checkpoint')
+                    or _get_latest_checkpoint(config['logging']['output_dir']))
+    saveroad_dir = args.saveroad_dir or inf.get('saveroad_dir', '')
+    threshold    = args.threshold if args.threshold is not None else inf.get('threshold')
+
+    project_points = None
+    if saveroad_dir:
+        sys.path.insert(0, saveroad_dir)
+        try:
+            from tools import project_points_v2_withPC as project_points
+        except ImportError as e:
+            print(f"WARNING: Could not load SAVEROAD toolkit: {e}")
+            project_points = None
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model  = ModelFactory.get_model(config).to(device)
+    model.load_state_dict(torch.load(checkpoint, map_location=device))
+    model.eval()
+    print(f"Checkpoint : {checkpoint}")
+    print(f"Device     : {device}")
+
+    for dataset_name in datasets:
+        _predict_dataset(dataset_name, model, device, config, args,
+                         checkpoint, saveroad_dir, project_points, threshold)
 
 
 if __name__ == '__main__':
