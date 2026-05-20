@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from models.factory import ModelFactory
 from utils.project_to_image import parse_calibration, occupancy_to_points, project_to_image
+from utils.config_utils import resolve_splits
 
 
 def _extract_ts_ms(path):
@@ -411,6 +412,7 @@ def main():
 
     with open(args.config, encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    config = resolve_splits(config)
 
     inf      = config.get('inference', {})
     datasets = [args.dataset] if args.dataset else config['dataset'].get('test', [])

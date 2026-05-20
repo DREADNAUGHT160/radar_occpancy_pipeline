@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 from models.factory import ModelFactory
 from dataset.dataloader import RadarDataset
+from utils.config_utils import resolve_splits
 from utils.logger import setup_logger
 from utils.report import ReportGenerator
 from utils.tb_logger import log_train_images, log_eval_images, log_epoch_summary
@@ -71,6 +72,7 @@ class Trainer:
     # ── Data ──────────────────────────────────────────────────────────────────
 
     def setup_data(self):
+        self.config = resolve_splits(self.config)
         self.logger.info("Setting up data loaders...")
         bs         = self.config['dataset']['batch_size']
         nw         = self.config['dataset']['num_workers']
