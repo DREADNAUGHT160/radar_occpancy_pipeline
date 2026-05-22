@@ -13,7 +13,7 @@ inference.camera section of the config YAML is auto-updated with pco_dir and
 label_txt_dir entries for every prepared dataset.
 
 Usage:
-  python dataset/prepare_dataset.py --config configs/train_config.yaml
+  python dataset/prepare_dataset.py --config configs/prepare_config.yaml
 """
 
 import os
@@ -99,8 +99,8 @@ def generate_labels(radar_npy_dir, lidar_pcd_dir, out_dir, sync_threshold):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default='configs/train_config.yaml',
-                        help='Path to train_config.yaml')
+    parser.add_argument('--config', default='configs/prepare_config.yaml',
+                        help='Path to prepare_config.yaml (or train_config.yaml)')
     args = parser.parse_args()
 
     config_path = os.path.abspath(args.config)

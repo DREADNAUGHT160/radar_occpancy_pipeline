@@ -1,0 +1,26 @@
+dataset:
+  # Root folder containing raw collections.
+  # Each collection must be a subfolder named like  1_RC002, 12_RC013, 18_RC019, etc.
+  raw_data_dir: ''   # e.g. E:/DataCollectionApril2022_11_03
+
+  # Where prepared data will be written.
+  # Each RC folder will be created here as <base_dir>/<RC_NAME>/.
+  base_dir: ''       # e.g. D:/dataset
+
+  # RC folder names to prepare. List every dataset you want ready for training.
+  # Duplicates across train/val/test are handled automatically (each RC is processed once).
+  train: []          # e.g. [RC013, RC019]
+  val:   []          # e.g. [RC013]
+  test:  []          # e.g. [RC014]
+
+  # Maximum radar–LiDAR timestamp difference (ms) for a valid sync pair.
+  sync_threshold_ms: 100
+
+  # Subfolder names inside each RC folder.
+  # Only change these if your prepared data uses different folder names.
+  subfolders:
+    rad_power: rad_power   # radar power .npy cubes
+    rad_elev:  rad_elev    # radar elevation .npy cubes
+    labels:    labels      # occupancy label .npy files
+    pco:       pco         # camera images (.png)
+    calib:     calib       # calibration .txt files
