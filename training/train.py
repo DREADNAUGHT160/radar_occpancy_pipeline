@@ -362,14 +362,20 @@ class Trainer:
         if not self.config['logging'].get('save_inference_images', False):
             return
         import subprocess
-        cfg_path = self.config.get('_config_path', 'configs/train_config.yaml')
-        run_id   = os.path.basename(self.config['logging']['output_dir'])
-        base_dir = f"verification_output/{run_id}"
+        cfg_path        = self.config.get('_config_path', 'configs/train_config.yaml')
+        run_id          = os.path.basename(self.config['logging']['output_dir'])
+        base_dir        = f"verification_output/{run_id}"
+        best_checkpoint = os.path.join(self.config['logging']['output_dir'], 'best_model.pth')
 
         scripts = [
             ("Full evaluation mosaic",
              ["python", str(ROOT / "utils" / "evaluate.py"),
               "--config", cfg_path, "--out_dir", f"{base_dir}/eval_all_data_views"]),
+            ("Predict on test split",
+             ["python", str(ROOT / "utils" / "predict.py"),
+              "--config", cfg_path,
+              "--checkpoint", best_checkpoint,
+              "--out_dir", f"{base_dir}/predict_test"]),
         ]
         for desc, cmd in scripts:
             try:

@@ -70,16 +70,16 @@ def generate_labels(radar_npy_dir, lidar_pcd_dir, out_dir, sync_threshold):
 
     if not radar_files:
         print(f"    [WARN] No radar npy files found in {radar_npy_dir}/rad_power/")
-        return 0, 0
+        return 0, 0, 0, 0
     if not lidar_files:
         print(f"    [WARN] No LiDAR .h5 files found in {lidar_pcd_dir}")
-        return 0, 0
+        return 0, 0, 0, 0
 
     matched = sync_timestamps(radar_files, lidar_files, sync_threshold)
     print(f"    Synced {len(matched)}/{len(radar_files)} radar-LiDAR pairs "
           f"(threshold {sync_threshold} ms)")
     if not matched:
-        return 0, 0
+        return 0, 0, 0, len(radar_files)
 
     saved, skipped = 0, 0
     for m in tqdm(matched, desc="    Labels", unit="frame", leave=False):
@@ -92,7 +92,7 @@ def generate_labels(radar_npy_dir, lidar_pcd_dir, out_dir, sync_threshold):
             np.save(out_path, grid)
             saved += 1
 
-    return saved, skipped
+    return saved, skipped, len(matched), len(radar_files)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -171,16 +171,17 @@ def main():
                 print(f"    [WARN] No .mat files in {radar_src}")
 
         # -- Step 2: LiDAR labels ----------------------------------------------
+        n_matched, n_radar = 0, 0
         print(f"  Step 2: LiDAR label generation")
         if os.path.isdir(lidar_src):
-            saved, skipped = generate_labels(dst_folder, lidar_src,
-                                             os.path.join(dst_folder, lbl_sub),
-                                             threshold)
+            saved, skipped, n_matched, n_radar = generate_labels(
+                dst_folder, lidar_src, os.path.join(dst_folder, lbl_sub), threshold)
             print(f"    Saved={saved}  Skipped={skipped}")
         else:
-            existing = len(glob.glob(os.path.join(dst_folder, lbl_sub, '*.npy')))
-            if existing:
-                print(f"    Already generated ({existing} labels) — skipping.")
+            n_radar   = len(glob.glob(os.path.join(dst_folder, rp_sub, '*.npy')))
+            n_matched = len(glob.glob(os.path.join(dst_folder, lbl_sub, '*.npy')))
+            if n_radar:
+                print(f"    Already generated ({n_matched} labels) — skipping.")
             else:
                 print(f"    [WARN] No LiDAR pcd folder at {lidar_src}")
 
@@ -200,6 +201,9 @@ def main():
             print(f"    calib/ : copied={c}  skipped={s}")
         else:
             print(f"    [WARN] No labels_new2 folder at {calib_src}")
+
+        if n_radar:
+            print(f"  >> {n_matched}/{n_radar} radar frames have a matching LiDAR frame")
 
         prepared.append(rc_name)
         print()
