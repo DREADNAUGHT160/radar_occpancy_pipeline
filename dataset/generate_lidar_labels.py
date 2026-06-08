@@ -49,23 +49,27 @@ GRID_CTR_DEG  = -5.0   # elevation angle that maps to the grid centre bin
 PHI_MAX_RAD   = 0.5236  # ~30 degrees — controls the elevation bin spread
 
 
-def extract_ts_ms(filepath):
+def extract_ts_s(filepath):
     stem = os.path.basename(filepath)
     stem = re.sub(r'\.(npy|h5)$', '', stem)
     val  = float(re.search(r'[\d.]+', stem).group(0))
-    return int(val * 1000) if val < 1e11 else int(val)
+    # LiDAR .h5 stems are already decimal seconds — keep as-is
+    # Radar .npy stems are integer ms — divide by 1000 to get seconds
+    return val if val < 1e11 else val / 1000.0
 
 
 def sync_timestamps(radar_files, lidar_files, threshold_ms):
-    matched   = []
-    lidar_ts  = np.array([extract_ts_ms(f) for f in lidar_files])
+    matched     = []
+    threshold_s = threshold_ms / 1000.0
+    lidar_ts    = np.array([extract_ts_s(f) for f in lidar_files])
     for rf in radar_files:
-        r_ts  = extract_ts_ms(rf)
-        diffs = np.abs(lidar_ts - r_ts)
-        idx   = np.argmin(diffs)
-        if diffs[idx] <= threshold_ms:
+        r_ts_s = extract_ts_s(rf)
+        diffs  = np.abs(lidar_ts - r_ts_s)
+        idx    = np.argmin(diffs)
+        if diffs[idx] <= threshold_s:
+            r_ts_ms = int(r_ts_s * 1000)
             matched.append({'radar': rf, 'lidar': lidar_files[idx],
-                            'r_ts': r_ts, 'dt_ms': int(diffs[idx])})
+                            'r_ts': r_ts_ms, 'dt_ms': round(diffs[idx] * 1000)})
     return matched
 
 
