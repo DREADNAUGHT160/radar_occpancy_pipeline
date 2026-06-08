@@ -67,9 +67,8 @@ def sync_timestamps(radar_files, lidar_files, threshold_ms):
         diffs  = np.abs(lidar_ts - r_ts_s)
         idx    = np.argmin(diffs)
         if diffs[idx] <= threshold_s:
-            r_ts_ms = int(r_ts_s * 1000)
             matched.append({'radar': rf, 'lidar': lidar_files[idx],
-                            'r_ts': r_ts_ms, 'dt_ms': round(diffs[idx] * 1000)})
+                            'r_ts': r_ts_s, 'dt_ms': round(diffs[idx] * 1000)})
     return matched
 
 
