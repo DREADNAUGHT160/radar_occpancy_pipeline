@@ -64,6 +64,10 @@ class RadarDataset(Dataset):
         else:
             self.matched_data = [{'power': p, 'label': None} for p in self.power_paths]
 
+        self._ram_cache = {}
+        if (config or {}).get('dataset', {}).get('cache_in_ram', False):
+            self._build_ram_cache()
+
     # ── Timestamp sync ────────────────────────────────────────────────────────
 
     def _extract_timestamp(self, filepath):
@@ -110,6 +114,14 @@ class RadarDataset(Dataset):
         if elev_maxs:
             self.stats['elev_max'] = float(np.max(elev_maxs))
 
+    # ── RAM cache ─────────────────────────────────────────────────────────────
+
+    def _build_ram_cache(self):
+        print(f"Dataset: loading all {len(self.matched_data)} frames into RAM...")
+        for idx, sample in enumerate(self.matched_data):
+            self._ram_cache[idx] = self._load_sample(sample)
+        print("Dataset: RAM cache ready.")
+
     # ── Dataset interface ─────────────────────────────────────────────────────
 
     def __len__(self):
@@ -119,14 +131,14 @@ class RadarDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        sample     = self.matched_data[idx]
+        if idx in self._ram_cache:
+            return self._ram_cache[idx]
+
+        return self._load_sample(self.matched_data[idx])
+
+    def _load_sample(self, sample):
         power_path = sample['power']
         label_path = sample['label']
-
-        # Per-sample augment flag (train.py marks training indices via _train_indices)
-        should_augment = self.augment
-        if hasattr(self, '_train_indices'):
-            should_augment = idx in self._train_indices
 
         cfg     = self.config or {}
         model   = cfg.get('model', {})
@@ -198,9 +210,7 @@ class RadarDataset(Dataset):
         # 4× Doppler downsampling: 512 → 128
         if not use_full_doppler and data.shape[0] == 512:
             if is_power:
-                t    = torch.from_numpy(data).unsqueeze(0).unsqueeze(0)
-                t    = torch.nn.functional.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))
-                data = t.squeeze(0).squeeze(0).numpy()
+                data = data.reshape(128, 4, data.shape[1], data.shape[2]).max(axis=1)
             else:
                 data = data[::4, :, :]
 

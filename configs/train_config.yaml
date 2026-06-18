@@ -23,7 +23,8 @@ dataset:
   val:   [RC013]
   test:  [RC014]
   batch_size: 1
-  num_workers: 0
+  num_workers: 4
+  cache_in_ram: true
   augmentations: true
   sync_threshold_ms: 100
   filter_bboxes: false
