@@ -61,5 +61,28 @@ weather:
   # File format:  (N,3) float32 XYZ  or  (N,4) XYZ+confidence
   cfar_dir: ''
 
+# ── Prediction plots (eval_plots.py) ────────────────────────────────────────────
+# Generates equally spaced 4-row mosaic plots:
+#   Row 1: radar input (BEV, AE map, RE map)
+#   Row 2: ground-truth occupancy (BEV, front, side)
+#   Row 3: raw prediction probability (BEV, front, side)
+#   Row 4: thresholded prediction (BEV, front, side)
+eval_plots:
+  dataset:   ''      # RC folder to plot, e.g. RC_clear (falls back to basic.dataset)
+  n_plots:   10      # number of equally spaced frames to generate
+  threshold: 0.4
+  pco_dir:   ''      # optional: folder with .jpg camera images for a reference column
+
+# ── Camera projection check (camera_check.py) ────────────────────────────────────
+# Projects predicted occupancy grid onto camera images for visual verification.
+# Generates equally spaced side-by-side plots: original image vs radar overlay.
+camera:
+  dataset:     ''    # RC folder, e.g. RC_clear
+  n_plots:     10    # number of equally spaced frames
+  threshold:   0.4
+  saveroad_dir: 'C:/Users/evinb/Desktop/thesis/SAVEROAD_DataLoader'
+  pco_dir:     ''    # folder containing .jpg camera images
+  calib_dir:   ''    # folder with .txt calib files (auto-detected as <dataset>/calib if empty)
+
 # ── Output ──────────────────────────────────────────────────────────────────────
 out_dir: verification_output/eval
