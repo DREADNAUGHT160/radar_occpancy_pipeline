@@ -7,10 +7,10 @@ model:
   encoder_out_channels: 64
   num_classes: 64
 
-checkpoint: ''   # path to best_model.pth, e.g. checkpoints/20260620_104847/best_model.pth
+checkpoint: 'D:/thesis data/thesis/model_pipeline/checkpoints/20260417_090255/best_model.pth'
 
 # ── Dataset ─────────────────────────────────────────────────────────────────────
-base_dir: ''     # root folder containing RC sub-folders, e.g. D:/dataset
+base_dir: 'D:/dataset'     # root folder containing RC sub-folders, e.g. D:/dataset
 
 subfolders:
   rad_power: rad_power
@@ -44,7 +44,7 @@ eval_mode: basic   # 'basic'  or  'weather'
 
 # ── Basic mode settings ─────────────────────────────────────────────────────────
 basic:
-  dataset: ''      # RC folder to evaluate, e.g. RC_clear
+  dataset: 'RC019'
   threshold: 0.4   # occupancy threshold for binarising predictions
 
 # ── Weather mode settings ───────────────────────────────────────────────────────
@@ -68,10 +68,10 @@ weather:
 #   Row 3: raw prediction probability (BEV, front, side)
 #   Row 4: thresholded prediction (BEV, front, side)
 eval_plots:
-  dataset:   ''      # RC folder to plot, e.g. RC_clear (falls back to basic.dataset)
-  n_plots:   10      # number of equally spaced frames to generate
+  dataset:   'RC019'
+  n_plots:   10
   threshold: 0.4
-  pco_dir:   ''      # optional: folder with .jpg camera images for a reference column
+  pco_dir:   'C:/Users/evinb/Desktop/thesis/SAVEROAD_DataLoader/18_RC019/data/pco'
 
 # ── Camera projection check (camera_check.py) ────────────────────────────────────
 # Projects predicted occupancy grid onto camera images for visual verification.

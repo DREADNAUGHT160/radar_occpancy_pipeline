@@ -214,7 +214,7 @@ def main():
     ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
     total = len(ds)
     print(f"\nDataset: {rc_name}  ({total} frames)")
-    print(f"Generating {n_plots} equally spaced plots  →  {out_dir}")
+    print(f"Generating {n_plots} equally spaced plots  ->  {out_dir}")
 
     # Pick equally spaced indices
     indices = np.linspace(0, total - 1, min(n_plots, total)).astype(int)

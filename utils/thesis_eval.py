@@ -2,14 +2,14 @@
 Unified evaluation script — reads configs/eval_config.yaml.
 
 eval_mode: basic
-    Load model on clear-weather data → per-voxel IoU / Precision / Recall.
+    Load model on clear-weather data -> per-voxel IoU / Precision / Recall.
     Use this to verify the model is working before running thesis eval.
 
 eval_mode: weather
     Full thesis evaluation across clear / fog / rain:
       Exp 1 — AP, P_d, P_fa, Chamfer Distance  (clear)
       Exp 2 — AP, P_d, P_fa                    (fog, rain)
-      Exp 3 — Degradation %                    (clear → fog/rain)
+      Exp 3 — Degradation %                    (clear -> fog/rain)
       Exp 4 — Point density per distance band  (0-10m, 10-15m, 15-20m)
     Compares DL model vs CFAR baseline.
 
@@ -197,7 +197,7 @@ def run_basic(config, ckpt, out_dir):
         writer.writerow(['GLOBAL', f"{iou_g:.4f}", f"{prec_g:.4f}", f"{rec_g:.4f}"])
         writer.writerow(['MEAN',   f"{iou_m:.4f}", f"{prec_m:.4f}", f"{rec_m:.4f}"])
 
-    print(f"\n  Results saved → {os.path.abspath(out_csv)}")
+    print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +438,7 @@ def run_weather(config, ckpt, out_dir):
     # ── Degradation ───────────────────────────────────────────────────────────
     if 'clear' in all_results:
         print(f"\n{'='*60}")
-        print("DEGRADATION  (clear → weather)  lower % = more robust")
+        print("DEGRADATION  (clear -> weather)  lower % = more robust")
         print(f"{'='*60}")
         print(f"{'Weather':<8} {'Method':<6} {'AP deg%':>8} {'P_d deg%':>9} {'P_fa deg%':>10}")
         print('─' * 45)
@@ -501,7 +501,7 @@ def run_weather(config, ckpt, out_dir):
                     f"{d.get('15-20m', np.nan):.4f}" if not np.isnan(d.get('15-20m', np.nan)) else 'N/A',
                 ])
 
-    print(f"\n  Results saved → {os.path.abspath(out_csv)}")
+    print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

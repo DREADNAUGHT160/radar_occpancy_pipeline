@@ -173,7 +173,7 @@ def main():
     ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
     total = len(ds)
     print(f"\nDataset : {rc_name}  ({total} frames)")
-    print(f"Plotting : {n_plots} equally spaced frames  →  {out_dir}")
+    print(f"Plotting : {n_plots} equally spaced frames  ->  {out_dir}")
 
     # Index calib files
     txt_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
