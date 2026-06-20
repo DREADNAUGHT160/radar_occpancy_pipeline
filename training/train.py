@@ -370,7 +370,9 @@ class Trainer:
         scripts = [
             ("Full evaluation mosaic",
              ["python", str(ROOT / "utils" / "evaluate.py"),
-              "--config", cfg_path, "--out_dir", f"{base_dir}/eval_all_data_views"]),
+              "--config", cfg_path,
+              "--checkpoint", best_checkpoint,
+              "--out_dir", f"{base_dir}/eval_all_data_views"]),
             ("Predict on test split",
              ["python", str(ROOT / "utils" / "predict.py"),
               "--config", cfg_path,
@@ -380,9 +382,12 @@ class Trainer:
         for desc, cmd in scripts:
             try:
                 self.logger.info(f"Running: {desc}")
-                subprocess.run(cmd, check=True)
-            except Exception as e:
-                self.logger.error(f"Post-training step failed [{desc}]: {e}")
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                if result.stdout:
+                    self.logger.info(result.stdout)
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"Post-training step failed [{desc}]:\n{e.stderr}")
+                print(f"\n[ERROR] {desc} failed:\n{e.stderr}")
 
 
 if __name__ == '__main__':

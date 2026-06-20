@@ -24,7 +24,7 @@ dataset:
   test:  [RC014]
   batch_size: 1
   num_workers: 4
-  cache_in_ram: true
+  cache_in_ram: false
   augmentations: true
   sync_threshold_ms: 100
   filter_bboxes: false
@@ -91,4 +91,15 @@ inference:
   checkpoint: ''
   threshold: null
   out_dir: verification_output
-  saveroad_dir: ''   # optional, e.g. D:/thesis data/thesis/SAVEROAD_DataLoader
+  saveroad_dir: 'C:/Users/evinb/Desktop/thesis/SAVEROAD_DataLoader'
+
+thesis_eval:
+  # RC folder name(s) for each weather condition
+  weather_splits:
+    clear: []   # e.g. [RC_clear]
+    fog:   []   # e.g. [RC_fog]
+    rain:  []   # e.g. [RC_rain]
+  # Root folder containing CFAR point clouds, one subfolder per RC folder:
+  #   cfar_dir/RC_clear/<timestamp>.npy  — shape (N,3) XYZ or (N,4) XYZ+confidence
+  #   cfar_dir/RC_fog/<timestamp>.npy
+  cfar_dir: ''
