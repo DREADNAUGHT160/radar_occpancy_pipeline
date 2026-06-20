@@ -1,0 +1,65 @@
+# ── Model ──────────────────────────────────────────────────────────────────────
+model:
+  name: resnet18_radar
+  in_channels: 2
+  doppler_depth: 128
+  use_full_doppler: false
+  encoder_out_channels: 64
+  num_classes: 64
+
+checkpoint: ''   # path to best_model.pth, e.g. checkpoints/20260620_104847/best_model.pth
+
+# ── Dataset ─────────────────────────────────────────────────────────────────────
+base_dir: ''     # root folder containing RC sub-folders, e.g. D:/dataset
+
+subfolders:
+  rad_power: rad_power
+  rad_elev:  rad_elev
+  labels:    labels
+  calib:     calib
+
+normalization:
+  enable: true
+  auto_normalization: false
+  power_log_transform: true
+  power_min_val: -100.0
+  power_max_val: -31.7
+  normalize_elevation: false
+  elevation_max_angle: 0.7854
+  mask_elevation: false
+  power_threshold: -60.0
+
+# ── Evaluation mode ─────────────────────────────────────────────────────────────
+#
+# basic  — Load model on clear-weather data and compute per-voxel
+#          IoU / Precision / Recall against LiDAR GT labels.
+#          Use this to verify the model is working correctly before
+#          running the full thesis evaluation.
+#
+# weather — Full thesis evaluation:
+#           AP, P_d, P_fa, Chamfer Distance, degradation %, point density
+#           across clear / fog / rain, comparing DL model vs CFAR.
+#
+eval_mode: basic   # 'basic'  or  'weather'
+
+# ── Basic mode settings ─────────────────────────────────────────────────────────
+basic:
+  dataset: ''      # RC folder to evaluate, e.g. RC_clear
+  threshold: 0.4   # occupancy threshold for binarising predictions
+
+# ── Weather mode settings ───────────────────────────────────────────────────────
+weather:
+  threshold: 0.4
+
+  weather_splits:
+    clear: []      # e.g. [RC_clear]
+    fog:   []      # e.g. [RC_fog]
+    rain:  []      # e.g. [RC_rain]
+
+  # Root folder for CFAR point clouds.
+  # Expected layout:  cfar_dir/<RC_folder>/<timestamp>.npy
+  # File format:  (N,3) float32 XYZ  or  (N,4) XYZ+confidence
+  cfar_dir: ''
+
+# ── Output ──────────────────────────────────────────────────────────────────────
+out_dir: verification_output/eval

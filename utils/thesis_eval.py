@@ -1,17 +1,21 @@
 """
-Thesis evaluation: CFAR vs DL model across weather conditions.
+Unified evaluation script — reads configs/eval_config.yaml.
 
-Implements the four experiments from the thesis evaluation plan:
-  Exp 1 — Clear weather accuracy  (AP, P_d, P_fa, Chamfer Distance)
-  Exp 2 — Weather robustness      (AP, P_d, P_fa in fog and rain)
-  Exp 3 — Degradation analysis    ((clear - weather) / clear × 100)
-  Exp 4 — Point density per distance band inside GT box
+eval_mode: basic
+    Load model on clear-weather data → per-voxel IoU / Precision / Recall.
+    Use this to verify the model is working before running thesis eval.
+
+eval_mode: weather
+    Full thesis evaluation across clear / fog / rain:
+      Exp 1 — AP, P_d, P_fa, Chamfer Distance  (clear)
+      Exp 2 — AP, P_d, P_fa                    (fog, rain)
+      Exp 3 — Degradation %                    (clear → fog/rain)
+      Exp 4 — Point density per distance band  (0-10m, 10-15m, 15-20m)
+    Compares DL model vs CFAR baseline.
 
 Usage:
-  python utils/thesis_eval.py \
-    --config   configs/train_config.yaml \
-    --checkpoint checkpoints/<run_id>/best_model.pth \
-    --threshold 0.4
+  python utils/thesis_eval.py --config configs/eval_config.yaml
+  python utils/thesis_eval.py --config configs/eval_config.yaml --checkpoint checkpoints/<run_id>/best_model.pth
 """
 import os
 import sys
@@ -33,7 +37,7 @@ from dataset.dataloader import RadarDataset
 from utils.project_to_image import occupancy_to_points, parse_calibration
 
 
-# ── Geometry helpers ──────────────────────────────────────────────────────────
+# ── Shared helpers ────────────────────────────────────────────────────────────
 
 def _extract_ts_ms(path):
     match = re.search(r'(\d+\.\d+|\d+)', os.path.basename(path))
@@ -43,26 +47,56 @@ def _extract_ts_ms(path):
     return 0
 
 
-def load_gt_box(txt_path):
-    """Parse BoundingBox corners from calib .txt → (N,3) array or None."""
+def _build_ds_config(base_cfg, rc_dir):
+    """Wrap eval_config into the shape RadarDataset expects."""
+    sf = base_cfg.get('subfolders', {})
+    return {
+        'model':   base_cfg.get('model', {}),
+        'dataset': {
+            'radar_dir':         rc_dir,
+            'lidar_path':        os.path.join(rc_dir, sf.get('labels', 'labels')),
+            'sync_threshold_ms': 100,
+            'subfolders':        sf,
+            'normalization':     base_cfg.get('normalization', {}),
+            'filter_bboxes':     False,
+            'label_text_dir':    '',
+        },
+    }
+
+
+def _load_model(config, ckpt, device):
+    model = ModelFactory.get_model(config).to(device)
+    model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
+    model.eval()
+    return model
+
+
+def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
+    """Return (box_corners, radar_to_lidar) for the nearest calib file, or (None, zeros)."""
+    if len(txt_ts) == 0:
+        return None, np.zeros(3)
+    diffs = np.abs(txt_ts - ts_ms)
+    best  = int(np.argmin(diffs))
+    if diffs[best] > threshold_ms:
+        return None, np.zeros(3)
+    txt_path = txt_files[best]
     with open(txt_path) as f:
         content = f.read()
     match = re.search(r'"BoundingBox":([\d\s.-]+),', content)
-    if not match:
-        return None
-    corners = np.array(match.group(1).split(), dtype=float).reshape(-1, 3)
-    return corners
+    corners = np.array(match.group(1).split(), dtype=float).reshape(-1, 3) if match else None
+    _, _, _, r2l = parse_calibration(txt_path)
+    return corners, r2l
 
+
+# ── Geometry ──────────────────────────────────────────────────────────────────
 
 def points_in_box(pts, corners):
-    """Boolean mask: which points (N,3) lie inside the AABB of box corners."""
     mn = corners.min(axis=0)
     mx = corners.max(axis=0)
     return np.all((pts >= mn) & (pts <= mx), axis=1)
 
 
 def chamfer_distance(pts_a, pts_b):
-    """Symmetric Chamfer distance between two point sets (mean nearest-neighbour)."""
     if len(pts_a) == 0 or len(pts_b) == 0:
         return np.nan
     diff = np.linalg.norm(pts_a[:, None, :] - pts_b[None, :, :], axis=-1)
@@ -70,7 +104,6 @@ def chamfer_distance(pts_a, pts_b):
 
 
 def point_density_by_band(pts_in_box, box_volume, bands=((0, 10), (10, 15), (15, 20))):
-    """Points per m³ inside GT box broken down by horizontal range band."""
     r = np.sqrt(pts_in_box[:, 0] ** 2 + pts_in_box[:, 1] ** 2) if len(pts_in_box) > 0 else np.array([])
     result = {}
     for d_min, d_max in bands:
@@ -79,21 +112,126 @@ def point_density_by_band(pts_in_box, box_volume, bands=((0, 10), (10, 15), (15,
     return result
 
 
-# ── Metric computation ────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# BASIC MODE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_basic(config, ckpt, out_dir):
+    """Per-voxel IoU / Precision / Recall on a single clear-weather dataset."""
+    basic_cfg  = config.get('basic', {})
+    rc_name    = basic_cfg.get('dataset', '')
+    threshold  = float(basic_cfg.get('threshold', 0.4))
+    base_dir   = config.get('base_dir', '')
+
+    if not rc_name:
+        print("ERROR: set basic.dataset in eval_config.yaml (e.g. RC_clear)")
+        return
+
+    rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model  = _load_model(config, ckpt, device)
+
+    ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
+    print(f"\nBasic eval — {rc_name}  ({len(ds)} frames)  threshold={threshold}")
+
+    tp_total = fp_total = fn_total = 0
+    per_frame = []
+
+    for idx in tqdm(range(len(ds)), desc="Evaluating"):
+        radar_tensor, label_tensor = ds[idx]
+
+        with torch.no_grad():
+            pred_prob = torch.sigmoid(
+                model(radar_tensor.unsqueeze(0).to(device))
+            )[0].cpu()
+
+        pred_bin  = (pred_prob  > threshold).float()
+        label_bin = (label_tensor > 0.5).float()
+
+        tp = (pred_bin * label_bin).sum().item()
+        fp = (pred_bin * (1 - label_bin)).sum().item()
+        fn = ((1 - pred_bin) * label_bin).sum().item()
+
+        tp_total += tp
+        fp_total += fp
+        fn_total += fn
+
+        iou   = tp / (tp + fp + fn + 1e-8)
+        prec  = tp / (tp + fp + 1e-8)
+        rec   = tp / (tp + fn + 1e-8)
+        per_frame.append({'frame': idx, 'IoU': iou, 'Precision': prec, 'Recall': rec})
+
+    iou_g  = tp_total / (tp_total + fp_total + fn_total + 1e-8)
+    prec_g = tp_total / (tp_total + fp_total + 1e-8)
+    rec_g  = tp_total / (tp_total + fn_total + 1e-8)
+
+    iou_m  = float(np.mean([f['IoU']       for f in per_frame]))
+    prec_m = float(np.mean([f['Precision'] for f in per_frame]))
+    rec_m  = float(np.mean([f['Recall']    for f in per_frame]))
+
+    print(f"\n{'─'*46}")
+    print(f"{'Metric':<18} {'Global':>10} {'Per-frame mean':>14}")
+    print(f"{'─'*46}")
+    print(f"{'IoU':<18} {iou_g:10.4f} {iou_m:14.4f}")
+    print(f"{'Precision':<18} {prec_g:10.4f} {prec_m:14.4f}")
+    print(f"{'Recall':<18} {rec_g:10.4f} {rec_m:14.4f}")
+    print(f"{'─'*46}")
+
+    # Verdict
+    if iou_g > 0.1:
+        print("\n  Model is producing meaningful predictions.")
+    elif iou_g > 0.01:
+        print("\n  Model is detecting something — IoU is low, may need more training.")
+    else:
+        print("\n  WARNING: IoU near zero — model may not be learning or threshold is wrong.")
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_csv = os.path.join(out_dir, 'basic_results.csv')
+    with open(out_csv, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Frame', 'IoU', 'Precision', 'Recall'])
+        for fd in per_frame:
+            writer.writerow([fd['frame'], f"{fd['IoU']:.4f}",
+                             f"{fd['Precision']:.4f}", f"{fd['Recall']:.4f}"])
+        writer.writerow([])
+        writer.writerow(['GLOBAL', f"{iou_g:.4f}", f"{prec_g:.4f}", f"{rec_g:.4f}"])
+        writer.writerow(['MEAN',   f"{iou_m:.4f}", f"{prec_m:.4f}", f"{rec_m:.4f}"])
+
+    print(f"\n  Results saved → {os.path.abspath(out_csv)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WEATHER MODE — metric helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_cfar(cfar_rc_dir, ts_ms, threshold_ms=200):
+    files = (sorted(glob.glob(os.path.join(cfar_rc_dir, '*.npy'))) +
+             sorted(glob.glob(os.path.join(cfar_rc_dir, '*.txt'))))
+    if not files:
+        return None, None
+    ts_arr = np.array([_extract_ts_ms(f) for f in files])
+    diffs  = np.abs(ts_arr - ts_ms)
+    best   = int(np.argmin(diffs))
+    if diffs[best] > threshold_ms:
+        return None, None
+    f = files[best]
+    try:
+        data = np.load(f) if f.endswith('.npy') else np.loadtxt(f)
+    except Exception:
+        return None, None
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if len(data) == 0:
+        return None, None
+    pts    = data[:, :3].astype(np.float32)
+    scores = data[:, 3].astype(np.float32) if data.shape[1] > 3 else None
+    return pts, scores
+
 
 def compute_ap(frames_data):
-    """
-    AP via precision-recall curve (point-in-box criterion).
-
-    frames_data: list of dicts with 'pts' (N,3), 'scores' (N,), 'box_corners' (M,3).
-    A point is TP if it lies inside the GT box, FP otherwise.
-    """
     all_scores, all_in_box = [], []
-
     for fd in frames_data:
-        pts     = fd['pts']
-        scores  = fd['scores']
-        corners = fd['box_corners']
+        pts, scores, corners = fd['pts'], fd['scores'], fd['box_corners']
         if pts is None or len(pts) == 0 or corners is None:
             continue
         if scores is None:
@@ -103,190 +241,45 @@ def compute_ap(frames_data):
         all_in_box.extend(in_box.tolist())
 
     if not all_scores or sum(all_in_box) == 0:
-        return 0.0, np.array([]), np.array([])
+        return 0.0
 
-    scores_arr  = np.array(all_scores)
-    in_box_arr  = np.array(all_in_box, dtype=bool)
-    order       = np.argsort(-scores_arr)
-    in_box_arr  = in_box_arr[order]
+    scores_arr = np.array(all_scores)
+    in_box_arr = np.array(all_in_box, dtype=bool)
+    order      = np.argsort(-scores_arr)
+    in_box_arr = in_box_arr[order]
 
-    tp_cum  = np.cumsum(in_box_arr)
-    fp_cum  = np.cumsum(~in_box_arr)
-    total_p = in_box_arr.sum()
+    tp_cum = np.cumsum(in_box_arr)
+    fp_cum = np.cumsum(~in_box_arr)
+    prec   = tp_cum / (tp_cum + fp_cum + 1e-8)
+    rec    = tp_cum / in_box_arr.sum()
 
-    precision = tp_cum / (tp_cum + fp_cum + 1e-8)
-    recall    = tp_cum / total_p
-
-    ap = float(np.trapz(precision, recall))
-    return ap, recall, precision
+    return float(np.trapz(prec, rec))
 
 
 def compute_pd_pfa(frames_data, threshold):
-    """
-    P_d: fraction of frames where ≥1 point above threshold is inside GT box.
-    P_fa: points above threshold outside GT box / total points above threshold.
-    """
     n_frames = n_detected = total = outside = 0
-
     for fd in frames_data:
-        pts     = fd['pts']
-        scores  = fd['scores']
-        corners = fd['box_corners']
+        pts, scores, corners = fd['pts'], fd['scores'], fd['box_corners']
         if pts is None or corners is None:
             continue
         n_frames += 1
-
-        if scores is not None:
-            mask = scores >= threshold
-            pts_t = pts[mask]
-        else:
-            pts_t = pts
-
+        pts_t = pts[scores >= threshold] if scores is not None else pts
         if len(pts_t) == 0:
             continue
-
         in_box = points_in_box(pts_t, corners)
         total   += len(pts_t)
         outside += int((~in_box).sum())
         if in_box.any():
             n_detected += 1
-
     p_d  = n_detected / n_frames if n_frames > 0 else 0.0
     p_fa = outside / total        if total    > 0 else 0.0
     return p_d, p_fa
 
 
-# ── CFAR loader ───────────────────────────────────────────────────────────────
+def compute_weather_metrics(frames, threshold, weather):
+    ap        = compute_ap(frames)
+    p_d, p_fa = compute_pd_pfa(frames, threshold)
 
-def load_cfar_for_ts(cfar_rc_dir, ts_ms, threshold_ms=200):
-    """
-    Load CFAR point cloud nearest to ts_ms from cfar_rc_dir.
-
-    Expected formats:
-      .npy — (N,3) XYZ  or  (N,4) XYZ+confidence
-      .txt — space-separated rows, first 3 cols = XYZ, optional 4th = confidence
-    """
-    files = (sorted(glob.glob(os.path.join(cfar_rc_dir, '*.npy'))) +
-             sorted(glob.glob(os.path.join(cfar_rc_dir, '*.txt'))))
-    if not files:
-        return None, None
-
-    ts_arr = np.array([_extract_ts_ms(f) for f in files])
-    diffs  = np.abs(ts_arr - ts_ms)
-    best   = int(np.argmin(diffs))
-    if diffs[best] > threshold_ms:
-        return None, None
-
-    f = files[best]
-    try:
-        data = np.load(f) if f.endswith('.npy') else np.loadtxt(f)
-    except Exception:
-        return None, None
-
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    if len(data) == 0:
-        return None, None
-
-    pts    = data[:, :3].astype(np.float32)
-    scores = data[:, 3].astype(np.float32) if data.shape[1] > 3 else None
-    return pts, scores
-
-
-# ── Per-weather data collection ───────────────────────────────────────────────
-
-def collect_frames(rc_folders, base_dir, config, model, device, threshold, cfar_dir, weather):
-    """Run inference + load CFAR for all frames in a list of RC folders."""
-    sf      = config['dataset'].get('subfolders', {})
-    dl_frames, cfar_frames = [], []
-
-    for rc_name in rc_folders:
-        rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
-        calib_dir = os.path.join(rc_dir, sf.get('calib', 'calib'))
-        lbl_dir   = os.path.join(rc_dir, sf.get('labels', 'labels'))
-
-        ds_cfg = {**config, 'dataset': {**config['dataset'],
-                   'radar_dir': rc_dir, 'lidar_path': lbl_dir}}
-        try:
-            ds = RadarDataset(rc_dir, augment=False, config=ds_cfg)
-        except Exception as e:
-            print(f"  Skipping {rc_name}: {e}")
-            continue
-
-        txt_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
-        txt_ts    = np.array([_extract_ts_ms(f) for f in txt_files]) if txt_files else np.array([])
-
-        cfar_rc_dir = os.path.join(cfar_dir, rc_name) if cfar_dir else ''
-
-        for idx in tqdm(range(len(ds)), desc=rc_name):
-            radar_tensor, label_tensor = ds[idx]
-            sample = ds.matched_data[idx]
-            ts_ms  = _extract_ts_ms(sample['power'])
-
-            # ── Calib / GT box ────────────────────────────────────────────────
-            box_corners    = None
-            radar_to_lidar = np.zeros(3)
-            box_volume     = 0.0
-
-            if len(txt_ts) > 0:
-                diffs = np.abs(txt_ts - ts_ms)
-                best  = int(np.argmin(diffs))
-                if diffs[best] <= 100:
-                    txt_path = txt_files[best]
-                    box_corners = load_gt_box(txt_path)
-                    _, _, _, radar_to_lidar = parse_calibration(txt_path)
-                    if box_corners is not None:
-                        dims       = box_corners.max(axis=0) - box_corners.min(axis=0)
-                        box_volume = float(dims[0] * dims[1] * dims[2])
-
-            # ── DL inference ──────────────────────────────────────────────────
-            with torch.no_grad():
-                pred_np = torch.sigmoid(
-                    model(radar_tensor.unsqueeze(0).to(device))
-                )[0].cpu().numpy()
-
-            pts_dl, scores_dl = occupancy_to_points(pred_np, threshold=0.0)
-            pts_dl = pts_dl + radar_to_lidar
-
-            # ── LiDAR GT points (clear weather only, from label grid) ─────────
-            lidar_pts_in_box = None
-            if weather == 'clear':
-                lbl_np = label_tensor.numpy()
-                pts_lbl, _ = occupancy_to_points(lbl_np, threshold=0.5)
-                pts_lbl = pts_lbl + radar_to_lidar
-                if box_corners is not None and len(pts_lbl) > 0:
-                    lidar_pts_in_box = pts_lbl[points_in_box(pts_lbl, box_corners)]
-
-            dl_frames.append({
-                'pts':        pts_dl,
-                'scores':     scores_dl,
-                'box_corners': box_corners,
-                'lidar_pts':  lidar_pts_in_box,
-                'box_volume': box_volume,
-            })
-
-            # ── CFAR ──────────────────────────────────────────────────────────
-            if cfar_rc_dir:
-                pts_c, scores_c = load_cfar_for_ts(cfar_rc_dir, ts_ms)
-                cfar_frames.append({
-                    'pts':        pts_c,
-                    'scores':     scores_c,
-                    'box_corners': box_corners,
-                    'lidar_pts':  lidar_pts_in_box,
-                    'box_volume': box_volume,
-                })
-
-    return dl_frames, cfar_frames
-
-
-# ── Experiment runners ────────────────────────────────────────────────────────
-
-def compute_all_metrics(frames, threshold, weather):
-    """AP, P_d, P_fa, Chamfer Distance, point density for a set of frames."""
-    ap, _, _   = compute_ap(frames)
-    p_d, p_fa  = compute_pd_pfa(frames, threshold)
-
-    # Chamfer Distance (clear only)
     cd = np.nan
     if weather == 'clear':
         cd_vals = []
@@ -295,11 +288,9 @@ def compute_all_metrics(frames, threshold, weather):
                     or fd['lidar_pts'] is None or len(fd['lidar_pts']) == 0):
                 continue
             scores = fd['scores']
-            mask   = scores >= threshold if scores is not None else np.ones(len(fd['pts']), dtype=bool)
+            mask   = (scores >= threshold) if scores is not None else np.ones(len(fd['pts']), dtype=bool)
             pts_in = fd['pts'][mask]
-            if len(pts_in) == 0:
-                continue
-            pts_in = pts_in[points_in_box(pts_in, fd['box_corners'])]
+            pts_in = pts_in[points_in_box(pts_in, fd['box_corners'])] if len(pts_in) else pts_in
             if len(pts_in) == 0:
                 continue
             val = chamfer_distance(pts_in, fd['lidar_pts'])
@@ -307,165 +298,191 @@ def compute_all_metrics(frames, threshold, weather):
                 cd_vals.append(val)
         cd = float(np.mean(cd_vals)) if cd_vals else np.nan
 
-    # Point density per distance band
     bands       = ((0, 10), (10, 15), (15, 20))
     density_acc = {f"{a}-{b}m": [] for a, b in bands}
     for fd in frames:
         if fd['pts'] is None or fd['box_corners'] is None:
             continue
         scores = fd['scores']
-        mask   = scores >= threshold if scores is not None else np.ones(len(fd['pts']), dtype=bool)
+        mask   = (scores >= threshold) if scores is not None else np.ones(len(fd['pts']), dtype=bool)
         pts_t  = fd['pts'][mask]
         if len(pts_t) == 0:
             continue
         pts_in = pts_t[points_in_box(pts_t, fd['box_corners'])]
         if len(pts_in) == 0:
             continue
-        bv  = fd['box_volume']
-        den = point_density_by_band(pts_in, bv, bands)
+        den = point_density_by_band(pts_in, fd['box_volume'], bands)
         for k, v in den.items():
             density_acc[k].append(v)
 
     density = {k: float(np.mean(v)) if v else np.nan for k, v in density_acc.items()}
-
     return {'AP': ap, 'P_d': p_d, 'P_fa': p_fa, 'CD': cd, 'density': density}
 
 
-def degradation(clear_val, weather_val):
-    if clear_val and clear_val > 0:
-        return (clear_val - weather_val) / clear_val * 100
-    return np.nan
+def collect_frames(rc_folders, base_dir, config, model, device, threshold, cfar_dir, weather):
+    sf         = config.get('subfolders', {})
+    dl_frames  = []
+    cfar_frames = []
+
+    for rc_name in rc_folders:
+        rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
+        calib_dir = os.path.join(rc_dir, sf.get('calib', 'calib'))
+
+        try:
+            ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
+        except Exception as e:
+            print(f"  Skipping {rc_name}: {e}")
+            continue
+
+        txt_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
+        txt_ts    = np.array([_extract_ts_ms(f) for f in txt_files]) if txt_files else np.array([])
+        cfar_rc   = os.path.join(cfar_dir, rc_name) if cfar_dir else ''
+
+        for idx in tqdm(range(len(ds)), desc=rc_name):
+            radar_tensor, label_tensor = ds[idx]
+            sample = ds.matched_data[idx]
+            ts_ms  = _extract_ts_ms(sample['power'])
+
+            corners, r2l = _find_calib(txt_files, txt_ts, ts_ms)
+            box_volume   = 0.0
+            if corners is not None:
+                dims       = corners.max(axis=0) - corners.min(axis=0)
+                box_volume = float(dims[0] * dims[1] * dims[2])
+
+            with torch.no_grad():
+                pred_np = torch.sigmoid(
+                    model(radar_tensor.unsqueeze(0).to(device))
+                )[0].cpu().numpy()
+
+            pts_dl, scores_dl = occupancy_to_points(pred_np, threshold=0.0)
+            pts_dl = pts_dl + r2l
+
+            lidar_pts_in_box = None
+            if weather == 'clear':
+                lbl_pts, _ = occupancy_to_points(label_tensor.numpy(), threshold=0.5)
+                lbl_pts    = lbl_pts + r2l
+                if corners is not None and len(lbl_pts) > 0:
+                    lidar_pts_in_box = lbl_pts[points_in_box(lbl_pts, corners)]
+
+            dl_frames.append({
+                'pts': pts_dl, 'scores': scores_dl,
+                'box_corners': corners, 'lidar_pts': lidar_pts_in_box,
+                'box_volume': box_volume,
+            })
+
+            if cfar_rc:
+                pts_c, scores_c = _load_cfar(cfar_rc, ts_ms)
+                cfar_frames.append({
+                    'pts': pts_c, 'scores': scores_c,
+                    'box_corners': corners, 'lidar_pts': lidar_pts_in_box,
+                    'box_volume': box_volume,
+                })
+
+    return dl_frames, cfar_frames
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# WEATHER MODE
+# ─────────────────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config',     required=True)
-    parser.add_argument('--checkpoint', default=None)
-    parser.add_argument('--threshold',  type=float, default=0.4)
-    parser.add_argument('--out_dir',    default='verification_output/thesis_eval')
-    args = parser.parse_args()
+def run_weather(config, ckpt, out_dir):
+    w_cfg          = config.get('weather', {})
+    threshold      = float(w_cfg.get('threshold', 0.4))
+    weather_splits = w_cfg.get('weather_splits', {})
+    cfar_dir       = w_cfg.get('cfar_dir', '')
+    base_dir       = config.get('base_dir', '')
 
-    with open(args.config, encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-
-    eval_cfg = config.get('thesis_eval', {})
-    weather_splits = eval_cfg.get('weather_splits', {})
-    cfar_dir       = eval_cfg.get('cfar_dir', '')
-    base_dir       = config['dataset'].get('base_dir', '')
-
-    if not weather_splits:
-        print("ERROR: thesis_eval.weather_splits not set in config.")
-        print("Add this to your config:\n"
-              "thesis_eval:\n"
-              "  weather_splits:\n"
-              "    clear: [RC_clear]\n"
-              "    fog:   [RC_fog]\n"
-              "    rain:  [RC_rain]\n"
-              "  cfar_dir: ''")
-        return
-
-    ckpt = args.checkpoint or config.get('inference', {}).get('checkpoint', '')
-    if not ckpt:
-        print("ERROR: provide --checkpoint or set inference.checkpoint in config.")
+    if not weather_splits or not any(weather_splits.values()):
+        print("ERROR: set weather.weather_splits in eval_config.yaml")
         return
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model  = ModelFactory.get_model(config).to(device)
-    model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
-    model.eval()
-    print(f"Model loaded from: {ckpt}")
-    print(f"Device: {device}  |  Threshold: {args.threshold}")
+    model  = _load_model(config, ckpt, device)
+    print(f"\nWeather eval — threshold={threshold}  device={device}")
 
-    os.makedirs(args.out_dir, exist_ok=True)
-
-    all_results = {}   # weather → {dl: metrics, cfar: metrics}
+    all_results = {}
 
     for weather, rc_folders in weather_splits.items():
+        if not rc_folders:
+            continue
         print(f"\n{'='*60}")
         print(f"  {weather.upper()} — {rc_folders}")
         print('='*60)
 
         dl_frames, cfar_frames = collect_frames(
             rc_folders, base_dir, config, model, device,
-            args.threshold, cfar_dir, weather)
+            threshold, cfar_dir, weather)
 
-        print(f"  Collected {len(dl_frames)} frames")
-
-        dl_metrics = compute_all_metrics(dl_frames, args.threshold, weather)
-        all_results[weather] = {'dl': dl_metrics}
+        print(f"  {len(dl_frames)} frames collected")
+        dl_m = compute_weather_metrics(dl_frames, threshold, weather)
+        all_results[weather] = {'DL': dl_m}
 
         if cfar_frames and any(f['pts'] is not None for f in cfar_frames):
-            cfar_metrics = compute_all_metrics(cfar_frames, 0.5, weather)
-            all_results[weather]['cfar'] = cfar_metrics
+            cfar_m = compute_weather_metrics(cfar_frames, 0.5, weather)
+            all_results[weather]['CFAR'] = cfar_m
 
-    # ── Experiment 1 & 2: Results table ──────────────────────────────────────
+    # ── Results table ─────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print("RESULTS TABLE")
     print(f"{'='*60}")
-    print(f"{'Weather':<8} {'Method':<6} {'AP':>6} {'P_d':>6} {'P_fa':>6} {'CD':>8}")
-    print('-' * 46)
+    print(f"{'Weather':<8} {'Method':<6} {'AP':>6} {'P_d':>6} {'P_fa':>6} {'CD':>9}")
+    print('─' * 48)
 
     for weather in ['clear', 'fog', 'rain']:
         if weather not in all_results:
             continue
-        for method in ['dl', 'cfar']:
-            if method not in all_results[weather]:
-                continue
-            m = all_results[weather][method]
-            cd_str = f"{m['CD']:8.4f}" if not np.isnan(m['CD']) else '     N/A'
-            print(f"{weather:<8} {method.upper():<6} {m['AP']:6.3f} {m['P_d']:6.3f} {m['P_fa']:6.3f} {cd_str}")
+        for method, m in all_results[weather].items():
+            cd_s = f"{m['CD']:9.4f}" if not np.isnan(m['CD']) else '      N/A'
+            print(f"{weather:<8} {method:<6} {m['AP']:6.3f} {m['P_d']:6.3f} {m['P_fa']:6.3f} {cd_s}")
 
-    # ── Experiment 3: Degradation ─────────────────────────────────────────────
+    # ── Degradation ───────────────────────────────────────────────────────────
     if 'clear' in all_results:
         print(f"\n{'='*60}")
-        print("DEGRADATION ANALYSIS  (clear → weather)")
+        print("DEGRADATION  (clear → weather)  lower % = more robust")
         print(f"{'='*60}")
         print(f"{'Weather':<8} {'Method':<6} {'AP deg%':>8} {'P_d deg%':>9} {'P_fa deg%':>10}")
-        print('-' * 45)
+        print('─' * 45)
+
+        def _deg(c, w):
+            return f"{(c - w) / c * 100:8.1f}%" if c > 0 else '     N/A'
 
         for weather in ['fog', 'rain']:
             if weather not in all_results:
                 continue
-            for method in ['dl', 'cfar']:
+            for method in ['DL', 'CFAR']:
                 if method not in all_results.get('clear', {}) or \
                    method not in all_results.get(weather, {}):
                     continue
-                c = all_results['clear'][method]
+                c = all_results['clear'][weather]    if False else all_results['clear'][method]
                 w = all_results[weather][method]
-                ap_deg  = degradation(c['AP'],  w['AP'])
-                pd_deg  = degradation(c['P_d'], w['P_d'])
-                pfa_deg = degradation(c['P_fa'], w['P_fa'])
+                print(f"{weather:<8} {method:<6} "
+                      f"{_deg(c['AP'], w['AP'])} "
+                      f"{_deg(c['P_d'], w['P_d'])} "
+                      f"{_deg(c['P_fa'], w['P_fa'])}")
 
-                def fmt(v):
-                    return f"{v:8.1f}%" if not np.isnan(v) else "     N/A"
-
-                print(f"{weather:<8} {method.upper():<6} {fmt(ap_deg)} {fmt(pd_deg)} {fmt(pfa_deg)}")
-
-    # ── Experiment 4: Point density ───────────────────────────────────────────
+    # ── Point density ─────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print("POINT DENSITY  (pts/m³ inside GT box)")
     print(f"{'='*60}")
     print(f"{'Weather':<8} {'Method':<6} {'0-10m':>8} {'10-15m':>8} {'15-20m':>8}")
-    print('-' * 45)
+    print('─' * 45)
+
+    def _fd(v):
+        return f"{v:8.3f}" if not np.isnan(v) else '     N/A'
 
     for weather in ['clear', 'fog', 'rain']:
         if weather not in all_results:
             continue
-        for method in ['dl', 'cfar']:
-            if method not in all_results[weather]:
-                continue
-            d = all_results[weather][method]['density']
-            def fmt_d(v):
-                return f"{v:8.3f}" if not np.isnan(v) else "     N/A"
-            print(f"{weather:<8} {method.upper():<6} "
-                  f"{fmt_d(d.get('0-10m', np.nan))} "
-                  f"{fmt_d(d.get('10-15m', np.nan))} "
-                  f"{fmt_d(d.get('15-20m', np.nan))}")
+        for method, m in all_results[weather].items():
+            d = m['density']
+            print(f"{weather:<8} {method:<6} "
+                  f"{_fd(d.get('0-10m', np.nan))} "
+                  f"{_fd(d.get('10-15m', np.nan))} "
+                  f"{_fd(d.get('15-20m', np.nan))}")
 
     # ── Save CSV ──────────────────────────────────────────────────────────────
-    out_csv = os.path.join(args.out_dir, 'thesis_results.csv')
+    os.makedirs(out_dir, exist_ok=True)
+    out_csv = os.path.join(out_dir, 'weather_results.csv')
     with open(out_csv, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['Weather', 'Method', 'AP', 'P_d', 'P_fa', 'Chamfer_Distance',
@@ -473,21 +490,52 @@ def main():
         for weather in ['clear', 'fog', 'rain']:
             if weather not in all_results:
                 continue
-            for method in ['dl', 'cfar']:
-                if method not in all_results[weather]:
-                    continue
-                m = all_results[weather][method]
+            for method, m in all_results[weather].items():
                 d = m['density']
                 writer.writerow([
-                    weather, method.upper(),
+                    weather, method,
                     f"{m['AP']:.4f}", f"{m['P_d']:.4f}", f"{m['P_fa']:.4f}",
                     f"{m['CD']:.4f}" if not np.isnan(m['CD']) else 'N/A',
-                    f"{d.get('0-10m', np.nan):.4f}" if not np.isnan(d.get('0-10m', np.nan)) else 'N/A',
+                    f"{d.get('0-10m', np.nan):.4f}"  if not np.isnan(d.get('0-10m',  np.nan)) else 'N/A',
                     f"{d.get('10-15m', np.nan):.4f}" if not np.isnan(d.get('10-15m', np.nan)) else 'N/A',
                     f"{d.get('15-20m', np.nan):.4f}" if not np.isnan(d.get('15-20m', np.nan)) else 'N/A',
                 ])
 
-    print(f"\nResults saved → {os.path.abspath(out_csv)}")
+    print(f"\n  Results saved → {os.path.abspath(out_csv)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config',     default='configs/eval_config.yaml')
+    parser.add_argument('--checkpoint', default=None,
+                        help='Override eval_config.yaml checkpoint path')
+    args = parser.parse_args()
+
+    with open(args.config, encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
+    ckpt = args.checkpoint or config.get('checkpoint', '')
+    if not ckpt:
+        print("ERROR: set checkpoint in eval_config.yaml or pass --checkpoint")
+        return
+
+    out_dir  = config.get('out_dir', 'verification_output/eval')
+    mode     = config.get('eval_mode', 'basic')
+
+    print(f"Config : {args.config}")
+    print(f"Mode   : {mode}")
+    print(f"Ckpt   : {ckpt}")
+
+    if mode == 'basic':
+        run_basic(config, ckpt, out_dir)
+    elif mode == 'weather':
+        run_weather(config, ckpt, out_dir)
+    else:
+        print(f"ERROR: unknown eval_mode '{mode}' — use 'basic' or 'weather'")
 
 
 if __name__ == '__main__':
