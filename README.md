@@ -182,6 +182,9 @@ dataset:
   batch_size: 1
   num_workers: 4        # set to 0 if multiprocessing causes issues
 
+model:
+  doppler_pool: max     # 'max' (default) | 'mean' | 'stride' | 'torch_max'
+
 training:
   epochs: 10
   lr: 0.001
@@ -191,7 +194,6 @@ training:
 logging:
   output_dir: checkpoints
   tensorboard: true
-  save_inference_images: true   # runs eval + camera projection after training
 ```
 
 ### Run training
@@ -202,22 +204,42 @@ $env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 python training/train.py --config configs/train_config.yaml
 ```
 
+### Terminal output per epoch
+
+```
+--- Epoch 3/10 ---
+  Train Loss : 0.2841
+  Val Loss   : 0.2512  |  Acc: 0.9831
+  IoU: 0.1643  |  Precision: 0.4320  |  Recall: 0.4011
+  LR         : 0.000872
+  *** Best model saved (val_loss=0.2512) ***
+```
+
+### CUDA OOM — automatic recovery
+
+If the GPU runs out of memory the batch size is automatically halved and the epoch retried:
+
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  CUDA OUT OF MEMORY
+  batch_size=6 is too large for this GPU
+  Retrying epoch 1 with batch_size=3 ...
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
+
 ### Outputs
 
 ```
 checkpoints/
   20260620_104847/          ← run_id (timestamp)
-    best_model.pth          saved when val loss improves
+    best_model.pth          saved when val loss improves (or train loss if no val set)
     final_model.pth         saved at end of last epoch
-    training.log            full log
+    training.log            full timestamped log
     tensorboard/            TensorBoard event files
     report.json             metrics summary
-
-verification_output/
-  20260620_104847/
-    eval_all_data_views/    mosaic plots for all frames
-    predict_test/           prediction plots on test split
 ```
+
+Training **only trains** — evaluation is run separately (see sections 6–9 below).
 
 ### Monitor with TensorBoard
 
@@ -500,13 +522,14 @@ Configured via `training.loss` in `train_config.yaml`. All use `BCEWithLogitsLos
 | `model.in_channels` | `2` | Number of input channels (power + elevation) |
 | `model.doppler_depth` | `128` | Doppler bins after downsampling |
 | `model.num_classes` | `64` | Elevation bins in output |
+| `model.doppler_pool` | `max` | Doppler 4× downsampling method: `max` (numpy), `mean` (numpy), `stride` (subsample), `torch_max` (PyTorch F.max_pool1d) |
 | `training.epochs` | `10` | Number of training epochs |
 | `training.lr` | `0.001` | Initial learning rate (Adam + CosineAnnealingLR) |
 | `training.loss` | `weighted_bce` | Loss function name |
 | `training.pos_weight` | `10.0` | Positive class weight for `weighted_bce` |
 | `logging.output_dir` | `checkpoints` | Root for checkpoint folders |
 | `logging.tensorboard` | `true` | Enable TensorBoard logging |
-| `logging.save_inference_images` | `true` | Auto-run eval + camera projection after training |
+| `logging.save_inference_images` | — | Unused — evaluation is run separately via `thesis_eval.py` |
 | `inference.threshold` | `null` | Occupancy threshold (`null` = dynamic midpoint) |
 | `inference.saveroad_dir` | `''` | Path to SAVEROAD toolkit |
 
@@ -584,33 +607,38 @@ return int(val * 1000) if val < 1e11 else int(val)
 ### Full pipeline from scratch
 
 ```bash
-# 1. Prepare data
+# 1. Prepare data (run once)
 python dataset/prepare_dataset.py --config configs/train_config.yaml
 
-# 2. Train
+# 2. Train — saves best_model.pth + final_model.pth, logs each epoch
 python training/train.py --config configs/train_config.yaml
 
-# 3. Quick visual check (equally spaced plots)
-python utils/eval_plots.py --config configs/eval_config.yaml --checkpoint checkpoints/<run_id>/best_model.pth
+# 3. Basic model sanity check (is it learning?)
+#    Set eval_mode: basic and basic.dataset in eval_config.yaml, then:
+python utils/thesis_eval.py --config configs/eval_config.yaml \
+    --checkpoint checkpoints/<run_id>/best_model.pth
 
-# 4. Basic metric check
-python utils/thesis_eval.py --config configs/eval_config.yaml
+# 4. Quick visual plots
+python utils/eval_plots.py --config configs/eval_config.yaml \
+    --checkpoint checkpoints/<run_id>/best_model.pth
 
 # 5. Camera overlay check
-python utils/camera_check.py --config configs/eval_config.yaml
+python utils/camera_check.py --config configs/eval_config.yaml \
+    --checkpoint checkpoints/<run_id>/best_model.pth
 ```
 
-### Thesis evaluation
+### Full thesis evaluation
 
 ```bash
 # Edit eval_config.yaml:
 #   eval_mode: weather
-#   weather.weather_splits.clear: [RC_clear]
-#   weather.weather_splits.fog:   [RC_fog]
-#   weather.weather_splits.rain:  [RC_rain]
-#   weather.cfar_dir: D:/cfar_outputs
+#   eval_splits:
+#     clear: [RC_clear]
+#     fog:   [RC_fog]
+#     rain:  [RC_rain]
 
-python utils/thesis_eval.py --config configs/eval_config.yaml
+python utils/thesis_eval.py --config configs/eval_config.yaml \
+    --checkpoint checkpoints/<run_id>/best_model.pth
 ```
 
 ---

@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 import glob
 import re
@@ -193,12 +194,26 @@ class RadarDataset(Dataset):
         if data.ndim == 3 and data.shape[2] > data.shape[0]:
             data = data.transpose(2, 0, 1)
 
-        use_full_doppler = self.config.get('model', {}).get('use_full_doppler', False) if self.config else False
+        model_cfg        = self.config.get('model', {}) if self.config else {}
+        use_full_doppler = model_cfg.get('use_full_doppler', False)
+        doppler_pool     = model_cfg.get('doppler_pool', 'max')   # 'max' | 'mean' | 'stride'
 
         # 4× Doppler downsampling: 512 → 128
         if not use_full_doppler and data.shape[0] == 512:
             if is_power:
-                data = data.reshape(128, 4, data.shape[1], data.shape[2]).max(axis=1)
+                blocks = data.reshape(128, 4, data.shape[1], data.shape[2])
+                if doppler_pool == 'mean':
+                    data = blocks.mean(axis=1)
+                elif doppler_pool == 'stride':
+                    data = data[::4, :, :]
+                elif doppler_pool == 'torch_max':
+                    # PyTorch max_pool1d along the Doppler axis (kernel=4, stride=4)
+                    h, w = data.shape[1], data.shape[2]
+                    t    = torch.from_numpy(data.reshape(1, 512, -1)).float()
+                    t    = F.max_pool1d(t, kernel_size=4, stride=4)
+                    data = t.squeeze(0).reshape(128, h, w).numpy()
+                else:                          # 'max' (default, numpy)
+                    data = blocks.max(axis=1)
             else:
                 data = data[::4, :, :]
 

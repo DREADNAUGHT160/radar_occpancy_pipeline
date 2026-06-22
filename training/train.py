@@ -207,61 +207,100 @@ class Trainer:
         self.setup_model()
         self.setup_training()
 
-        num_epochs    = self.config['training']['epochs']
-        best_val_loss = float('inf')
-        self.logger.info(f"Starting training — {num_epochs} epochs  loss={self.criterion}")
+        num_epochs     = self.config['training']['epochs']
+        best_val_loss  = float('inf')
+        lr             = self.config['training']['lr']
+        criterion_name = "val_loss" if self.val_loader else "train_loss"
+        save_path      = os.path.join(self.config['logging']['output_dir'], 'best_model.pth')
+
+        print(f"\n{'='*60}")
+        print(f"  Training: {self.config['experiment_name']}")
+        print(f"  Run ID  : {self.run_id}")
+        print(f"  Epochs  : {num_epochs}  |  LR: {lr}  |  Loss: {self.config['training'].get('loss','?')}")
+        print(f"  Output  : {self.config['logging']['output_dir']}")
+        print(f"{'='*60}\n")
+        self.logger.info(f"Starting training — {num_epochs} epochs  loss={self.criterion}  lr={lr}")
 
         try:
             for epoch in range(num_epochs):
                 self.current_epoch = epoch + 1
+                print(f"\n--- Epoch {self.current_epoch}/{num_epochs} ---")
+                self.logger.info(f"Epoch {self.current_epoch}/{num_epochs} started")
+
                 train_loss = self._train_one_epoch(epoch, num_epochs)
                 self.scheduler.step()
 
                 val_loss, val_acc, val_iou, val_prec, val_rec = self.validate()
+                current_lr = self.optimizer.param_groups[0]['lr']
 
+                # Terminal summary
+                print(f"  Train Loss : {train_loss:.4f}")
+                if self.val_loader:
+                    print(f"  Val Loss   : {val_loss:.4f}  |  Acc: {val_acc:.4f}")
+                    print(f"  IoU: {val_iou:.4f}  |  Precision: {val_prec:.4f}  |  Recall: {val_rec:.4f}")
+                print(f"  LR         : {current_lr:.6f}")
+
+                # Log file — full detail
                 self.logger.info(
                     f"Epoch {self.current_epoch}/{num_epochs} — "
-                    f"Train: {train_loss:.4f}  Val: {val_loss:.4f}  "
-                    f"IoU: {val_iou:.4f}  Prec: {val_prec:.4f}  Rec: {val_rec:.4f}")
+                    f"Train: {train_loss:.4f}  Val: {val_loss:.4f}  Acc: {val_acc:.4f}  "
+                    f"IoU: {val_iou:.4f}  Prec: {val_prec:.4f}  Rec: {val_rec:.4f}  LR: {current_lr:.6f}")
 
                 if self.writer:
                     self.writer.add_scalar('Loss/train', train_loss, self.current_epoch)
                     self.writer.add_scalar('Loss/val',   val_loss,   self.current_epoch)
-                    self.writer.add_scalar('LR', self.optimizer.param_groups[0]['lr'], self.current_epoch)
+                    self.writer.add_scalar('LR', current_lr, self.current_epoch)
                     self.writer.add_scalar('Metrics/IoU',       val_iou,  self.current_epoch)
                     self.writer.add_scalar('Metrics/Precision', val_prec, self.current_epoch)
                     self.writer.add_scalar('Metrics/Recall',    val_rec,  self.current_epoch)
                     log_epoch_summary(self.writer, self.current_epoch,
                                       train_loss, val_loss, val_acc, val_iou,
-                                      val_prec, val_rec,
-                                      self.optimizer.param_groups[0]['lr'], num_epochs)
+                                      val_prec, val_rec, current_lr, num_epochs)
 
                 self.report.log_metric(self.current_epoch, train_loss, val_loss, val_acc)
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    save_path = os.path.join(self.config['logging']['output_dir'], 'best_model.pth')
+                # Use train loss as the checkpoint criterion when no val set is available
+                monitor_loss = val_loss if self.val_loader else train_loss
+                if monitor_loss < best_val_loss:
+                    best_val_loss = monitor_loss
                     torch.save(self.model.state_dict(), save_path)
-                    self.logger.info(f"Best model saved (val_loss={val_loss:.4f})")
+                    print(f"  *** Best model saved ({criterion_name}={monitor_loss:.4f}) ***")
+                    self.logger.info(f"Best model saved — {criterion_name}={monitor_loss:.4f}  path={save_path}")
 
             final_path = os.path.join(self.config['logging']['output_dir'], 'final_model.pth')
             torch.save(self.model.state_dict(), final_path)
-            self.logger.info(f"Final model saved: {final_path}")
+
+            print(f"\n{'='*60}")
+            print(f"  Training complete — {num_epochs} epochs")
+            print(f"  Best {criterion_name}: {best_val_loss:.4f}")
+            print(f"  Final model : {final_path}")
+            print(f"  Best model  : {save_path}")
+            print(f"{'='*60}\n")
+            self.logger.info(f"Training complete — final model saved: {final_path}")
+            self.logger.info(f"Best {criterion_name}: {best_val_loss:.4f}")
 
             self.report.save_report()
             if self.writer:
                 self.writer.close()
 
-            self._run_post_training()
-
-            test_loss, test_acc, test_iou, test_prec, test_rec = self.test()
-            self.logger.info(
-                f"Test — Loss: {test_loss:.4f}  Acc: {test_acc:.4f}  "
-                f"IoU: {test_iou:.4f}  Prec: {test_prec:.4f}  Rec: {test_rec:.4f}")
-
         except Exception as e:
-            self.logger.error(f"Training crashed: {e}\n{traceback.format_exc()}")
+            print(f"\n{'!'*60}")
+            print(f"  TRAINING FAILED")
+            print(f"  Epoch : {getattr(self, 'current_epoch', '?')}")
+            print(f"  Error : {type(e).__name__}: {e}")
+            print(f"{'!'*60}")
+            self.logger.error(f"Training crashed at epoch {getattr(self, 'current_epoch', '?')}: "
+                              f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
             raise
+
+    def _rebuild_train_loader(self, batch_size):
+        """Rebuild the train DataLoader with a new batch size after an OOM retry."""
+        nw  = self.config['dataset']['num_workers']
+        pin = torch.cuda.is_available()
+        self.train_loader = DataLoader(
+            self.train_loader.dataset, batch_size, shuffle=True,
+            num_workers=nw, pin_memory=pin)
+        self.config['dataset']['batch_size'] = batch_size
 
     def _train_one_epoch(self, epoch, num_epochs):
         self.model.train()
@@ -275,13 +314,27 @@ class Trainer:
                 labels = labels.float()
 
             self.optimizer.zero_grad()
-            with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
-                outputs = self.model(images)
-                loss    = self.criterion(outputs, labels)
+            try:
+                with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
+                    outputs = self.model(images)
+                    loss    = self.criterion(outputs, labels)
 
-            self.scaler.scale(loss).backward()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                current_bs = self.config['dataset']['batch_size']
+                new_bs     = max(1, current_bs // 2)
+                print(f"\n{'!'*60}")
+                print(f"  CUDA OUT OF MEMORY")
+                print(f"  batch_size={current_bs} is too large for this GPU")
+                print(f"  Retrying epoch {epoch+1} with batch_size={new_bs} ...")
+                print(f"{'!'*60}\n")
+                self.logger.warning(
+                    f"CUDA OOM — batch_size {current_bs} → {new_bs}, retrying epoch {epoch+1}")
+                self._rebuild_train_loader(new_bs)
+                return self._train_one_epoch(epoch, num_epochs)
 
             running_loss += loss.item()
             pbar.set_postfix({'loss': running_loss / (i + 1)})
@@ -356,38 +409,6 @@ class Trainer:
 
         return avg_loss, accuracy, iou, precision, recall
 
-    # ── Post-training evaluation ──────────────────────────────────────────────
-
-    def _run_post_training(self):
-        if not self.config['logging'].get('save_inference_images', False):
-            return
-        import subprocess
-        cfg_path        = self.config.get('_config_path', 'configs/train_config.yaml')
-        run_id          = os.path.basename(self.config['logging']['output_dir'])
-        base_dir        = f"verification_output/{run_id}"
-        best_checkpoint = os.path.join(self.config['logging']['output_dir'], 'best_model.pth')
-
-        scripts = [
-            ("Full evaluation mosaic",
-             ["python", str(ROOT / "utils" / "evaluate.py"),
-              "--config", cfg_path,
-              "--checkpoint", best_checkpoint,
-              "--out_dir", f"{base_dir}/eval_all_data_views"]),
-            ("Predict on test split",
-             ["python", str(ROOT / "utils" / "predict.py"),
-              "--config", cfg_path,
-              "--checkpoint", best_checkpoint,
-              "--out_dir", f"{base_dir}/predict_test"]),
-        ]
-        for desc, cmd in scripts:
-            try:
-                self.logger.info(f"Running: {desc}")
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                if result.stdout:
-                    self.logger.info(result.stdout)
-            except subprocess.CalledProcessError as e:
-                self.logger.error(f"Post-training step failed [{desc}]:\n{e.stderr}")
-                print(f"\n[ERROR] {desc} failed:\n{e.stderr}")
 
 
 if __name__ == '__main__':

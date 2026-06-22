@@ -63,11 +63,15 @@ For each RC folder in `train + val + test`:
 
 ### Power preprocessing pipeline
 1. Transpose `(H, W, D)` → `(D, H, W)` if stored in wrong order
-2. 4× Doppler downsampling: `512 → 128` via `MaxPool3d(4,1,1)` — keeps strongest return per 4-bin window
+2. 4× Doppler downsampling: `512 → 128` — method controlled by `model.doppler_pool`:
+   - `max` (default) — NumPy reshape + `.max(axis=1)`, keeps strongest return per 4-bin window
+   - `mean` — NumPy reshape + `.mean(axis=1)`, averages the 4-bin window
+   - `stride` — `[::4]` simple subsampling, fastest
+   - `torch_max` — `F.max_pool1d(kernel=4, stride=4)`, PyTorch optimised kernel
 3. Log transform: `10·log10(x)`, clip to `[power_min_val, power_max_val]`, normalise to `[0, 1]`
 
 ### Elevation preprocessing pipeline
-1. Same Doppler downsample (`[::4]` stride)
+1. Doppler downsample always uses `[::4]` stride (elevation is spatial, max not meaningful)
 2. Optionally normalise by `elevation_max_angle`
 
 ### Axis alignment (critical)
@@ -123,8 +127,11 @@ Output `(64, 256, 256)` = elevation bins × range × azimuth — a full 3D occup
 ### Loop
 - Mixed-precision AMP (`torch.amp.autocast`) + gradient scaling (`GradScaler`)
 - Adam optimiser + CosineAnnealingLR scheduler
-- Best model saved by validation loss; final model always saved
-- Post-training: automatically runs `evaluate.py` mosaic
+- Best model saved by val loss; falls back to train loss if no val set is configured
+- CUDA OOM auto-recovery: halves batch size and retries the epoch automatically
+- Clear terminal output each epoch (train loss, val loss, IoU, precision, recall, LR)
+- Errors printed with `!!!!` banners so they are immediately visible
+- Training only trains — no automatic post-training scripts run
 - TensorBoard: loss, IoU, precision, recall, sample prediction images per epoch
 
 ### Loss functions (`training/losses.py`)
@@ -206,7 +213,7 @@ All parameters in one file. Key sections:
 | `dataset.subfolders` | Override subfolder names if your layout differs |
 | `dataset.normalization` | Log transform, min/max clipping, elevation normalisation |
 | `dataset.sync_threshold_ms` | Max radar–LiDAR timestamp delta for a valid match |
-| `model` | `in_channels`, `doppler_depth`, `num_classes` |
+| `model` | `in_channels`, `doppler_depth`, `num_classes`, `doppler_pool` (max/mean/stride/torch_max) |
 | `training` | Epochs, lr, loss function + its params |
 | `logging.output_dir` | Checkpoint output root |
 | `inference.checkpoint` | Path to `.pth` for prediction (blank = latest run) |
@@ -294,21 +301,23 @@ PIPELINE_OVERVIEW.md         this file
 
 ```bash
 # 1. Configure paths in configs/train_config.yaml
-#    Set: raw_data_dir, base_dir, train/val/test lists
+#    Set: base_dir, train/val/test lists, doppler_pool (optional)
 
 # 2. Prepare data (run once)
 python dataset/prepare_dataset.py --config configs/train_config.yaml
 
-# 3. Train
+# 3. Train — saves best_model.pth and final_model.pth
 python training/train.py --config configs/train_config.yaml
 
-# 4. Predict on test split (uses config.dataset.test by default)
-python utils/predict.py --config configs/train_config.yaml
+# 4. Basic model check (set eval_mode: basic in eval_config.yaml)
+python utils/thesis_eval.py --config configs/eval_config.yaml \
+    --checkpoint checkpoints/<run_id>/best_model.pth
 
-# 5. Single dataset override
-python utils/predict.py --config configs/train_config.yaml --dataset RC014
+# 5. Full thesis evaluation (set eval_mode: weather in eval_config.yaml)
+python utils/thesis_eval.py --config configs/eval_config.yaml \
+    --checkpoint checkpoints/<run_id>/best_model.pth
 
-# 6. Camera projection only
+# 6. Camera projection
 python utils/project_to_image.py --config configs/train_config.yaml --dataset RC014
 ```
 
