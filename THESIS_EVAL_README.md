@@ -20,14 +20,19 @@ It runs in two modes:
 ### Metrics (printed to terminal and saved to CSV)
 
 **1. Results Table**
-Average Precision (AP), Detection Probability (P_d), False Alarm Rate (P_fa), and
-Chamfer Distance (CD) for each weather condition and method.
+Average Precision (AP), Detection Probability (P_d), False Alarm Rate (P_fa) for all
+weather conditions. Chamfer Distance (CD) is **clear weather only** — LiDAR point clouds
+in fog/rain are corrupted and cannot serve as a reliable geometric ground truth.
 
 ```
 Weather  Method     AP    P_d   P_fa        CD
 ------------------------------------------------
 clear    DL      0.784  1.000  0.163    0.2722
 clear    CFAR    0.281  0.473  0.966    0.9407
+fog      DL      0.701  0.923  0.218       N/A
+fog      CFAR    0.198  0.604  0.387       N/A
+rain     DL      0.654  0.871  0.251       N/A
+rain     CFAR    0.143  0.521  0.412       N/A
 ```
 
 **2. Degradation Table**
@@ -207,7 +212,7 @@ python dataset/copy_cfar.py --config configs/prepare_config.yaml
 | **AP** | Average Precision — area under the precision-recall curve. Points inside the GT bounding box are true positives; points outside are false positives. Higher is better. |
 | **P_d** | Detection probability — fraction of frames where at least one predicted point falls inside the GT bounding box. Higher is better. |
 | **P_fa** | False alarm rate — fraction of all predicted points that fall outside the GT bounding box. Lower is better. |
-| **CD** | Chamfer Distance — mean nearest-neighbour distance between predicted points and GT LiDAR points (meters). Lower is better. Only computed for clear weather. |
+| **CD** | Chamfer Distance — mean nearest-neighbour distance between predicted points and GT LiDAR points (meters). Lower is better. **Clear weather only** — fog/rain LiDAR is unreliable so CD shows N/A for those conditions. |
 | **Density** | Average number of predicted points per m^3 inside the GT bounding box per range band. |
 
 CFAR points use a Y-axis sign correction automatically (SAVEROAD exports have Y inverted relative to the LiDAR coordinate frame).
