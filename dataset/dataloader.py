@@ -207,11 +207,10 @@ class RadarDataset(Dataset):
                 elif doppler_pool == 'stride':
                     data = data[::4, :, :]
                 elif doppler_pool == 'torch_max':
-                    # PyTorch max_pool1d along the Doppler axis (kernel=4, stride=4)
-                    h, w = data.shape[1], data.shape[2]
-                    t    = torch.from_numpy(data.reshape(1, 512, -1)).float()
-                    t    = F.max_pool1d(t, kernel_size=4, stride=4)
-                    data = t.squeeze(0).reshape(128, h, w).numpy()
+                    # PyTorch max_pool3d along the Doppler axis — matches original model_pipeline
+                    t    = torch.from_numpy(data).float().unsqueeze(0).unsqueeze(0)  # (1,1,512,H,W)
+                    t    = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))  # (1,1,128,H,W)
+                    data = t.squeeze(0).squeeze(0).numpy()                            # (128,H,W)
                 else:                          # 'max' (default, numpy)
                     data = blocks.max(axis=1)
             else:
