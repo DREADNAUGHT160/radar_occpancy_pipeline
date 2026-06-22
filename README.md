@@ -27,6 +27,40 @@ Set `dataset.raw_data_dir` and `dataset.base_dir` in `configs/train_config.yaml`
 
 ---
 
+## Step 1b — Check data (optional but recommended)
+
+Generates 2-row plots (radar input + GT label) for 5 random frames from every train RC folder. No model needed — use this to verify the dataset is loaded and aligned correctly before training.
+
+```bash
+# Default: train split, 5 frames per folder
+python utils/check_data.py --config configs/train_config.yaml
+
+# Choose a different split
+python utils/check_data.py --config configs/train_config.yaml --split val
+python utils/check_data.py --config configs/train_config.yaml --split test
+
+# Check more frames per folder
+python utils/check_data.py --config configs/train_config.yaml --n_plots 10
+
+# Check a single folder (ignores --split)
+python utils/check_data.py --config configs/train_config.yaml --rc RC019
+```
+
+Or set the defaults in `configs/train_config.yaml`:
+```yaml
+check_data:
+  split:   train    # train | val | test
+  n_plots: 5
+```
+
+Each plot shows:
+- **Row 0 — Radar input:** Power BEV / AE map (elev × azimuth) / RE map (elev × range)
+- **Row 1 — GT LiDAR:** BEV / Front view / Side view
+
+Output saved to `verification_output/data_check/<RC_folder>/`.
+
+---
+
 ## Step 2 — Train
 
 ```bash

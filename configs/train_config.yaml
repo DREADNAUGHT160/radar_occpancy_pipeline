@@ -123,6 +123,11 @@ logging:
   output_dir: checkpoints
   tensorboard: true
 
+# ── Data visualisation (check_data.py) ────────────────────────────────────────
+check_data:
+  split:   train    # which split to plot: train | val | test
+  n_plots: 5        # random frames per RC folder
+
 inference:
   checkpoint: ''
   threshold: null
