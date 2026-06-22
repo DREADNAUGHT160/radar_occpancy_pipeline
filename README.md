@@ -147,6 +147,53 @@ verification_output/eval/
 
 ---
 
+## Diagnostics — when something goes wrong
+
+Run the diagnostic tool to check everything before training, or to diagnose a failure. It checks the environment, config, data paths, GPU memory, DataLoader speed, model, and checkpoints — then saves a report folder you can send for help.
+
+```bash
+# Full diagnosis — safe to run any time, changes nothing
+python utils/diagnose.py --config configs/train_config.yaml
+
+# Diagnose + delete corrupted checkpoint runs + clear GPU and Python cache
+python utils/diagnose.py --config configs/train_config.yaml --clean
+
+# Also validate a specific checkpoint file
+python utils/diagnose.py --config configs/train_config.yaml \
+    --checkpoint checkpoints/<run_id>/best_model.pth
+```
+
+Output is saved to `diagnostic_output/<timestamp>/`:
+
+| File | What it contains |
+|---|---|
+| `errors.txt` | Failures only — send this first for quick triage |
+| `report.txt` | Full results for all 8 checks |
+| `report.json` | Machine-readable version of the same |
+| `plots/` | Sample input + GT images so data loading can be verified visually |
+
+**What it checks:**
+
+| # | Check | Examples of what it catches |
+|---|---|---|
+| 1 | Environment | PyTorch not installed, CUDA not available, missing packages |
+| 2 | Config | Missing required keys, bad learning rate, empty train split |
+| 3 | Paths & data | `base_dir` not found, missing RC folders, 0 files, wrong file shape, low timestamp sync rate |
+| 4 | GPU memory | Estimates if batch_size will fit in VRAM — warns before OOM happens |
+| 5 | DataLoader speed | Frames/sec, estimated time per epoch |
+| 6 | Model | Can model be created, checkpoint compatible, forward pass works |
+| 7 | Sample plots | Loads 3 frames per split and saves PNGs for visual verification |
+| 8 | Checkpoints | Detects corrupted runs (crashed before saving, or incomplete file write) |
+
+**`--clean` removes:**
+- Corrupted run folders (`final_model.pth` missing or file < 1 MB)
+- All `__pycache__` directories
+- GPU cache (`torch.cuda.empty_cache()`)
+
+Healthy run folders are never touched.
+
+---
+
 ## Key config options (`configs/train_config.yaml`)
 
 | Option | What it does |
