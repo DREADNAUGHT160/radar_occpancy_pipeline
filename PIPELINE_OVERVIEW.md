@@ -200,7 +200,174 @@ Runs on the full dataset (all splits). Produces a mosaic of prediction plots and
 
 ---
 
-## 8. Configuration (`configs/train_config.yaml`)
+## 8. Thesis Evaluation (`utils/thesis_eval.py`)
+
+The main evaluation script for the thesis. Configured via `configs/eval_config.yaml`. Runs in two modes set by `eval_mode`.
+
+### Mode 1 — `basic`
+
+Quick sanity check. Loads the model on a single clear-weather RC folder and computes per-voxel metrics against LiDAR ground truth.
+
+**Metrics computed:**
+- **IoU** — intersection over union (global across all voxels + per-frame mean)
+- **Precision** — predicted occupied / total predicted
+- **Recall** — predicted occupied / total ground truth occupied
+
+**Verdict printed automatically:**
+
+| IoU | Meaning |
+|---|---|
+| > 0.10 | Model is producing meaningful predictions |
+| 0.01–0.10 | Detecting something — may need more training |
+| < 0.01 | Near zero — check threshold, data paths, or training |
+
+**Outputs:** `basic_results.csv` + thesis prediction plots (if `thesis_plots.enable: true`)
+
+**Run:**
+```bash
+python utils/thesis_eval.py --config configs/eval_config.yaml
+```
+
+---
+
+### Mode 2 — `weather`
+
+Full 4-experiment thesis evaluation comparing the DL model against a CFAR baseline across clear, fog, and rain conditions.
+
+**Experiment 1 — Clear weather accuracy**
+- AP, P_d, P_fa, Chamfer Distance (CD)
+- CD is clear-weather only — fog/rain LiDAR is corrupted and shows N/A
+
+**Experiment 2 — Weather robustness**
+- AP, P_d, P_fa for fog and rain
+- CD not computed (unreliable LiDAR in adverse weather)
+
+**Experiment 3 — Degradation analysis**
+- `(clear − weather) / clear × 100%` for AP, P_d, P_fa
+- Lower % = more robust across weather conditions
+
+**Experiment 4 — Point density by range band**
+- Average predicted points per m³ inside the GT bounding box
+- Split by distance band: 0–5 m, 5–10 m, 10–15 m, 15–20 m
+
+**Metric definitions:**
+
+| Metric | Definition |
+|---|---|
+| **AP** | Average Precision — area under the precision-recall curve. Points inside the GT bounding box are TP, outside are FP |
+| **P_d** | Detection probability — fraction of frames where ≥1 predicted point falls inside the GT box |
+| **P_fa** | False alarm rate — points outside GT box / total predicted points |
+| **CD** | Chamfer Distance — symmetric mean nearest-neighbour distance between predicted points and LiDAR GT (metres). Clear weather only |
+
+**CFAR handling:**
+- CFAR point clouds loaded from `<rc_dir>/cfar/` (`.npy` or `.txt`, shape `(N,3)` XYZ or `(N,4)` XYZ+confidence)
+- Y-axis is automatically negated — SAVEROAD exports have Y inverted relative to the LiDAR frame
+- If `cfar/` is absent, evaluation runs DL only with no errors
+
+**Outputs:**
+```
+verification_output/eval/
+  weather_results.csv           all metrics in one CSV
+  thesis_figures/
+    <RC_folder>/
+      prediction_plots/         3-row mosaic PNGs (input / GT / prediction)
+      camera_projection/        camera image with predictions overlaid (only if pco/ exists)
+```
+
+**Run:**
+```bash
+python utils/thesis_eval.py --config configs/eval_config.yaml
+# Override checkpoint without editing the config:
+python utils/thesis_eval.py --config configs/eval_config.yaml --checkpoint checkpoints/<run_id>/best_model.pth
+```
+
+---
+
+### Thesis Figures (both modes)
+
+Both basic and weather modes generate prediction plots when `thesis_plots.enable: true`.
+
+**3-row mosaic per frame:**
+
+| Row | Col 0 — BEV | Col 1 — Front View | Col 2 — Side View |
+|---|---|---|---|
+| **Row 0: Radar input** | Max-power BEV (turbo) | AE map: elev × azimuth (turbo) | RE map: elev × range (turbo) |
+| **Row 1: GT LiDAR** | Occupancy BEV (gray) | Front view: elev × azimuth | Side view: elev × range |
+| **Row 2: Prediction** | Confidence BEV (magma) | Front view | Side view |
+
+Equally spaced frames are selected (skipping first/last 5) to give a representative spread across the recording.
+
+**Camera projection** — generated automatically if `pco/` and `calib/` exist in the RC folder. Projects predicted occupancy voxels onto the camera image, coloured by confidence (turbo colormap).
+
+**Config options:**
+```yaml
+thesis_plots:
+  enable:         true    # set false to skip figure generation
+  n_plots:        5       # frames per RC folder
+  threshold:      0.4     # confidence threshold
+  raw_prediction: true    # true = show raw probability; false = binarise at threshold
+```
+
+---
+
+### `eval_config.yaml` — key settings
+
+```yaml
+eval_mode:  basic          # basic | weather
+checkpoint: 'checkpoints/<run_id>/best_model.pth'
+base_dir:   '/media/SSD2/radar_dataset/'
+out_dir:    'verification_output/eval'
+
+# Basic mode
+basic:
+  dataset:   RC019         # RC folder to evaluate
+  threshold: 0.4
+
+# Weather mode
+weather:
+  threshold: 0.4
+  weather_splits:
+    clear: [RC019, RC032, RC033]
+    fog:   [RC031]
+    rain:  [RC036]
+
+thesis_plots:
+  enable:         true
+  n_plots:        5
+  threshold:      0.4
+  raw_prediction: true
+```
+
+---
+
+## 9. Data Visualisation (`utils/check_data.py`)
+
+Generates 2-row plots (radar input + GT label) for random frames from any dataset split. No model required — use this to verify data is loading and aligned correctly before training.
+
+**2-row mosaic per frame:**
+- **Row 0 — Radar input:** Power BEV (turbo) / AE map (elev × azimuth) / RE map (elev × range)
+- **Row 1 — GT LiDAR:** BEV / Front view / Side view
+
+**Run:**
+```bash
+python utils/check_data.py --config configs/train_config.yaml            # all train folders
+python utils/check_data.py --config configs/train_config.yaml --split val
+python utils/check_data.py --config configs/train_config.yaml --split test
+python utils/check_data.py --config configs/train_config.yaml --rc RC019 --n_plots 10
+```
+
+**Config:**
+```yaml
+check_data:
+  split:   train    # train | val | test
+  n_plots: 5
+```
+
+Output: `verification_output/data_check/<RC_folder>/`
+
+---
+
+## 10. Configuration (`configs/train_config.yaml`)
 
 All parameters in one file. Key sections:
 
