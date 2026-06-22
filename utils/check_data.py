@@ -69,13 +69,15 @@ def _build_ae_re(radar_tensor, norm_cfg):
     ae_sum = np.zeros((n_e, n_a)); ae_cnt = np.zeros((n_e, n_a))
     np.add.at(ae_sum, (e_b.flatten(), a_grid.flatten()), p_m.flatten())
     np.add.at(ae_cnt, (e_b.flatten(), a_grid.flatten()), 1)
-    ae_map = np.where(ae_cnt > 0, ae_sum / ae_cnt, 0)
+    with np.errstate(invalid='ignore'):
+        ae_map = np.where(ae_cnt > 0, ae_sum / ae_cnt, 0)
     if ae_map.max() > 0: ae_map /= ae_map.max()
 
     re_sum = np.zeros((n_e, n_r)); re_cnt = np.zeros((n_e, n_r))
     np.add.at(re_sum, (e_b.flatten(), r_grid.flatten()), p_m.flatten())
     np.add.at(re_cnt, (e_b.flatten(), r_grid.flatten()), 1)
-    re_map = np.where(re_cnt > 0, re_sum / re_cnt, 0)
+    with np.errstate(invalid='ignore'):
+        re_map = np.where(re_cnt > 0, re_sum / re_cnt, 0)
     if re_map.max() > 0: re_map /= re_map.max()
 
     bev = p_np.max(axis=0)
@@ -201,11 +203,16 @@ def main():
 
     total_saved = 0
     for rc_name in tqdm(rc_list, desc="RC folders"):
-        rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
+        # If rc_name is already an absolute path, use it directly
+        if os.path.isabs(rc_name) or os.path.exists(rc_name):
+            rc_dir = rc_name
+            rc_name = os.path.basename(rc_name.rstrip('/\\'))
+        else:
+            rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
         n = check_rc(rc_name, rc_dir, n_plots, train_cfg, args.out_dir)
         total_saved += n
         if n:
-            print(f"  {rc_name}: saved {n} plots → {os.path.join(args.out_dir, rc_name)}")
+            print(f"  {rc_name}: saved {n} plots -> {os.path.join(args.out_dir, rc_name)}")
 
     print(f"\nDone. {total_saved} plots saved to: {os.path.abspath(args.out_dir)}")
 
