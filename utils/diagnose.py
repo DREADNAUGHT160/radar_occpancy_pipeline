@@ -61,9 +61,9 @@ class Report:
             self.sections.append((self._cur_title, list(self._cur_lines)))
         self._cur_title = title
         self._cur_lines = []
-        print(f"\n{BOLD}{'-'*60}{RESET}")
+        print(f"\n{BOLD}{'─'*60}{RESET}")
         print(f"{BOLD}  {title}{RESET}")
-        print(f"{BOLD}{'-'*60}{RESET}")
+        print(f"{BOLD}{'─'*60}{RESET}")
 
     def ok(self, msg, key=None, value=None):
         line = _ok(msg)
@@ -109,7 +109,7 @@ class Report:
             f.write('=' * 60 + '\n\n')
 
             for title, lines in self.sections:
-                f.write(f"\n{'-'*60}\n{title}\n{'-'*60}\n")
+                f.write(f"\n{'─'*60}\n{title}\n{'─'*60}\n")
                 for status, msg in lines:
                     f.write(f"  [{status:4s}]  {msg}\n")
 
@@ -119,12 +119,12 @@ class Report:
             f.write(f"  Warnings : {len(self.warnings)}\n")
 
             if self.errors:
-                f.write(f"\n{'-'*60}\nFAILURES\n{'-'*60}\n")
+                f.write(f"\n{'─'*60}\nFAILURES\n{'─'*60}\n")
                 for e in self.errors:
                     f.write(f"  {e}\n")
 
             if self.warnings:
-                f.write(f"\n{'-'*60}\nWARNINGS\n{'-'*60}\n")
+                f.write(f"\n{'─'*60}\nWARNINGS\n{'─'*60}\n")
                 for w in self.warnings:
                     f.write(f"  {w}\n")
 
