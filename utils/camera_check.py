@@ -1,5 +1,5 @@
 """
-Camera projection check — overlays model predictions on camera images.
+Camera projection check -- overlays model predictions on camera images.
 
 Converts the predicted occupancy grid to 3D points and projects them
 onto camera images using calibration from the calib .txt files.
@@ -90,7 +90,7 @@ def project_and_save(idx, pts_3d, probs, img_path, K, r_t,
     try:
         proj_pts, _, _, _ = project_points.reprojection_opt(pts_world, img, K, r_t)
     except Exception as e:
-        print(f"  Frame {idx}: projection error — {e}")
+        print(f"  Frame {idx}: projection error -- {e}")
         return
 
     if len(proj_pts) == 0:

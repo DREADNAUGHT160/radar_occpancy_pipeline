@@ -59,14 +59,20 @@ def extract_ts_s(filepath):
 
 
 def sync_timestamps(radar_files, lidar_files, threshold_ms):
+    """
+    Radar-centric sync: for each radar frame find the nearest LiDAR frame.
+    threshold_ms > 0  — only accept matches within this delta.
+    threshold_ms == 0 — no threshold, always assign the nearest LiDAR frame.
+    """
     matched     = []
-    threshold_s = threshold_ms / 1000.0
-    lidar_ts    = np.array([extract_ts_s(f) for f in lidar_files])
+    no_threshold = threshold_ms == 0
+    threshold_s  = threshold_ms / 1000.0 if not no_threshold else None
+    lidar_ts     = np.array([extract_ts_s(f) for f in lidar_files])
     for rf in radar_files:
         r_ts_s = extract_ts_s(rf)
         diffs  = np.abs(lidar_ts - r_ts_s)
-        idx    = np.argmin(diffs)
-        if diffs[idx] <= threshold_s:
+        idx    = int(np.argmin(diffs))
+        if no_threshold or diffs[idx] <= threshold_s:
             matched.append({'radar': rf, 'lidar': lidar_files[idx],
                             'r_ts': r_ts_s, 'dt_ms': round(diffs[idx] * 1000)})
     return matched
@@ -141,7 +147,8 @@ def main():
     parser.add_argument('--out_dir',        required=True,
                         help='Output folder for .npy occupancy label files')
     parser.add_argument('--sync_threshold', type=int, default=100,
-                        help='Maximum timestamp delta accepted as a match (ms)')
+                        help='Maximum timestamp delta accepted as a match (ms). '
+                             'Set to 0 to disable threshold — always assigns nearest LiDAR frame.')
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -153,7 +160,8 @@ def main():
     print(f"LiDAR frames : {len(lidar_files)}")
 
     matched = sync_timestamps(radar_files, lidar_files, args.sync_threshold)
-    print(f"Synced       : {len(matched)} pairs (threshold {args.sync_threshold} ms)")
+    thresh_str = "no threshold" if args.sync_threshold == 0 else f"threshold {args.sync_threshold} ms"
+    print(f"Synced       : {len(matched)} pairs ({thresh_str})")
     if not matched:
         print("No matches found — check paths and sync_threshold.")
         return

@@ -23,4 +23,5 @@ dataset:
     rad_elev:  rad_elev    # radar elevation .npy cubes
     labels:    labels      # occupancy label .npy files
     pco:       pco         # camera images (.png)
-    calib:     calib       # calibration .txt files
+    calib:     calib       # calibration .txt files (from data/labels_new2)
+    cfar:      cfar        # CFAR radar point clouds (from data/radar)

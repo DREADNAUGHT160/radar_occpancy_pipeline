@@ -158,6 +158,7 @@ def main():
         lbl_sub   = sf.get('labels',    'labels')
         pco_sub   = sf.get('pco',       'pco')
         calib_sub = sf.get('calib',     'calib')
+        cfar_sub  = sf.get('cfar',      'cfar')
 
         # -- Step 1: Radar extraction ------------------------------------------
         print(f"  Step 1: Radar extraction")
@@ -201,6 +202,20 @@ def main():
             print(f"    calib/ : copied={c}  skipped={s}")
         else:
             print(f"    [WARN] No labels_new2 folder at {calib_src}")
+
+        # -- Step 4: CFAR point clouds -----------------------------------------
+        # Source: data/radar/*.txt  (SAVEROAD export: X,Y,Z,Doppler,Power per row)
+        # Dest:   <dst>/cfar/*.txt
+        # The evaluator applies Y-axis negation automatically to align with
+        # the LiDAR coordinate frame used by bounding boxes and DL predictions.
+        print(f"  Step 4: CFAR point clouds")
+        cfar_src = os.path.join(src_folder, 'data', 'radar')
+        cfar_dst = os.path.join(dst_folder, cfar_sub)
+        if os.path.isdir(cfar_src):
+            c, s = copy_files(cfar_src, cfar_dst, '*.txt')
+            print(f"    cfar/  : copied={c}  skipped={s}")
+        else:
+            print(f"    [WARN] No radar folder at {cfar_src} — CFAR will be skipped in eval")
 
         if n_radar:
             print(f"  >> {n_matched}/{n_radar} radar frames have a matching LiDAR frame")

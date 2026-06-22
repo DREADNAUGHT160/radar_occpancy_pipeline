@@ -2,7 +2,7 @@
 Generate equally spaced prediction plots for visual model verification.
 
 Produces the same 3-row mosaic as evaluate.py (radar input / GT / prediction)
-but only for N equally spaced frames instead of every frame — fast to run.
+but only for N equally spaced frames instead of every frame -- fast to run.
 
 Usage:
   python utils/eval_plots.py --config configs/eval_config.yaml --checkpoint checkpoints/<run_id>/best_model.pth
@@ -74,15 +74,13 @@ def _build_ae_re(radar_tensor, norm_cfg):
 
 
 def plot_frame(idx, radar_tensor, label_tensor, pred_prob, norm_cfg,
-               timestamp, pco_dir, out_dir, threshold):
+               timestamp, pco_dir, out_dir):
     bev, ae_map, re_map = _build_ae_re(radar_tensor, norm_cfg)
 
-    label     = label_tensor
-    pred_bev  = torch.max(pred_prob,  dim=0)[0];  label_bev = torch.max(label, dim=0)[0]
-    pred_fv   = torch.max(pred_prob,  dim=1)[0];  label_fv  = torch.max(label, dim=1)[0]
-    pred_re   = torch.max(pred_prob,  dim=2)[0];  label_re  = torch.max(label, dim=2)[0]
-    pred_bin  = (pred_prob > threshold).float()
-    pred_bin_bev = torch.max(pred_bin, dim=0)[0]
+    label    = label_tensor
+    pred_bev = torch.max(pred_prob, dim=0)[0];  label_bev = torch.max(label, dim=0)[0]
+    pred_fv  = torch.max(pred_prob, dim=1)[0];  label_fv  = torch.max(label, dim=1)[0]
+    pred_re  = torch.max(pred_prob, dim=2)[0];  label_re  = torch.max(label, dim=2)[0]
 
     # Try to find a matching camera image
     img_path = None
@@ -97,10 +95,10 @@ def plot_frame(idx, radar_tensor, label_tensor, pred_prob, norm_cfg,
     xticks     = np.linspace(0, 255, 7)
     xlabels_az = np.round(np.degrees(np.arcsin(np.linspace(-1, 1, 7)))).astype(int)
 
-    fig = plt.figure(figsize=(6 * ncols, 14))
-    gs  = fig.add_gridspec(4, ncols, hspace=0.35, wspace=0.25)
+    fig = plt.figure(figsize=(6 * ncols, 10))
+    gs  = fig.add_gridspec(3, ncols, hspace=0.35, wspace=0.25)
 
-    # ── Row 0: Radar input ────────────────────────────────────────────────────
+    # -- Row 0: Radar input ----------------------------------------------------
     ax = fig.add_subplot(gs[0, 0])
     ax.imshow(bev, cmap='turbo', origin='lower', aspect='auto', vmin=0, vmax=1)
     ax.set_title('Input: Power BEV')
@@ -120,7 +118,7 @@ def plot_frame(idx, radar_tensor, label_tensor, pred_prob, norm_cfg,
         ax.imshow(Image.open(img_path))
         ax.set_title('Camera Image'); ax.axis('off')
 
-    # ── Row 1: Ground truth ───────────────────────────────────────────────────
+    # -- Row 1: Ground truth ---------------------------------------------------
     ax = fig.add_subplot(gs[1, 0])
     ax.imshow(label_bev.numpy(), cmap='gray', origin='lower', aspect='auto')
     ax.set_title('GT: BEV')
@@ -135,7 +133,7 @@ def plot_frame(idx, radar_tensor, label_tensor, pred_prob, norm_cfg,
     ax.imshow(label_re.numpy(), cmap='gray', origin='lower', aspect='auto')
     ax.set_title('GT: Side View')
 
-    # ── Row 2: Prediction (raw probability) ───────────────────────────────────
+    # -- Row 2: Prediction (raw probability) -----------------------------------
     ax = fig.add_subplot(gs[2, 0])
     ax.imshow(pred_bev.numpy(), cmap='magma', origin='lower', aspect='auto', vmin=0, vmax=1)
     ax.set_title('Pred: BEV (raw prob)')
@@ -149,21 +147,6 @@ def plot_frame(idx, radar_tensor, label_tensor, pred_prob, norm_cfg,
     ax = fig.add_subplot(gs[2, 2])
     ax.imshow(pred_re.numpy(), cmap='magma', origin='lower', aspect='auto', vmin=0, vmax=1)
     ax.set_title('Pred: Side View (raw prob)')
-
-    # ── Row 3: Prediction (thresholded) ──────────────────────────────────────
-    ax = fig.add_subplot(gs[3, 0])
-    ax.imshow(pred_bin_bev.numpy(), cmap='gray', origin='lower', aspect='auto')
-    ax.set_title(f'Pred: BEV (thresh={threshold})')
-    ax.set_xticks(xticks); ax.set_xticklabels(xlabels_az)
-
-    ax = fig.add_subplot(gs[3, 1])
-    ax.imshow(torch.max(pred_bin, dim=1)[0].numpy(), cmap='gray', origin='lower', aspect='auto')
-    ax.set_title(f'Pred: Front View (thresh={threshold})')
-    ax.set_xticks(xticks); ax.set_xticklabels(xlabels_az)
-
-    ax = fig.add_subplot(gs[3, 2])
-    ax.imshow(torch.max(pred_bin, dim=2)[0].numpy(), cmap='gray', origin='lower', aspect='auto')
-    ax.set_title(f'Pred: Side View (thresh={threshold})')
 
     plt.suptitle(f"Frame {idx:03d}  |  ts={timestamp}", fontsize=13, y=1.01)
     plt.savefig(os.path.join(out_dir, f'plot_{idx:03d}_{timestamp}.png'),
@@ -179,7 +162,6 @@ def main():
                         help='RC folder name (overrides eval_config basic.dataset)')
     parser.add_argument('--n_plots',    type=int, default=None,
                         help='Number of equally spaced frames to plot (overrides config)')
-    parser.add_argument('--threshold',  type=float, default=None)
     parser.add_argument('--out_dir',    default=None)
     args = parser.parse_args()
 
@@ -192,7 +174,6 @@ def main():
     ckpt       = args.checkpoint or config.get('checkpoint', '')
     rc_name    = args.dataset    or plots_cfg.get('dataset') or basic_cfg.get('dataset', '')
     n_plots    = args.n_plots    or plots_cfg.get('n_plots', 10)
-    threshold  = args.threshold  or plots_cfg.get('threshold') or basic_cfg.get('threshold', 0.4)
     base_dir   = config.get('base_dir', '')
     pco_dir    = plots_cfg.get('pco_dir', '')
     out_dir    = args.out_dir or os.path.join(config.get('out_dir', 'verification_output/eval'), 'plots')
@@ -233,7 +214,7 @@ def main():
             )[0].cpu()
 
         plot_frame(int(idx), radar_tensor, label_tensor, pred_prob,
-                   norm_cfg, ts, pco_dir, out_dir, float(threshold))
+                   norm_cfg, ts, pco_dir, out_dir)
 
     print(f"\nSaved {len(indices)} plots to: {os.path.abspath(out_dir)}")
 

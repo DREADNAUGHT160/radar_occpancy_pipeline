@@ -22,7 +22,6 @@ import argparse
 import yaml
 import numpy as np
 import torch
-import cv2
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from pathlib import Path
@@ -33,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 from models.factory import ModelFactory
 from dataset.dataloader import RadarDataset
 
-# ── Geometry constants — must match generate_lidar_labels.py ─────────────────
+# -- Geometry constants -- must match generate_lidar_labels.py -----------------
 R_BINS          = 256
 A_BINS          = 256
 NUM_HEIGHT_BINS = 64
@@ -90,16 +89,16 @@ def occupancy_to_points(pred_prob, threshold):
     # Range
     r = (r_idx + 0.5) / R_BINS * MAX_RANGE
 
-    # Azimuth — un-flip the dataloader's torch.flip(label, [-1])
+    # Azimuth -- un-flip the dataloader's torch.flip(label, [-1])
     a_orig    = (A_BINS - 1) - a_idx
     sin_half  = np.sin(FOV_RAD / 2.0)
     sin_norm  = (a_orig + 0.5) / A_BINS
     sin_theta = np.clip(sin_norm * 2 * sin_half - sin_half, -1.0, 1.0)
     theta     = np.arcsin(sin_theta)
 
-    # Elevation — invert spherical mapping.
+    # Elevation -- invert spherical mapping.
     # Forward transform applies phi_aln = phi_raw - BORESIGHT, then phi_map = phi_aln - GRID_CTR
-    # (-5° + +5°). The two corrections cancel so phi_map = phi_raw. Inverse recovers phi_raw
+    # (-5deg + +5deg). The two corrections cancel so phi_map = phi_raw. Inverse recovers phi_raw
     # directly with no boresight offset needed.
     sin_max = np.sin(PHI_MAX_RAD)
     elev_n  = (z_idx + 0.5) / NUM_HEIGHT_BINS
@@ -121,7 +120,7 @@ def project_to_image(pts, probs, img, K, r_t, project_points):
     if len(proj_pts) == 0:
         return img
     colors     = (plt.cm.turbo(probs)[:, :3] * 255).astype(np.int32)
-    colors     = np.fliplr(colors)   # RGB → BGR for OpenCV
+    colors     = np.fliplr(colors)   # RGB -> BGR for OpenCV
     img_drawn  = project_points.project_points(img.copy(), proj_pts, colors, size=3)
     return img_drawn
 
@@ -137,6 +136,7 @@ def _get_latest_checkpoint(output_dir):
 
 
 def main():
+    import cv2
     parser = argparse.ArgumentParser()
     parser.add_argument('--config',        required=True)
     parser.add_argument('--dataset',       default=None,
@@ -164,7 +164,7 @@ def main():
     cam_cfg   = inf.get('camera', {}).get(ds_name, {})
     base_dir  = config['dataset'].get('base_dir', '')
 
-    # Resolve radar_dir first — used by pco_dir / label_txt_dir fallbacks below
+    # Resolve radar_dir first -- used by pco_dir / label_txt_dir fallbacks below
     if ds_name and base_dir:
         radar_dir = os.path.join(base_dir, ds_name)
     elif ds_name:
@@ -202,11 +202,11 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     if not label_txt_dir:
-        print("WARNING: label_txt_dir not set — skipping camera projection. "
+        print("WARNING: label_txt_dir not set -- skipping camera projection. "
               "Set config.inference.camera.<dataset>.label_txt_dir")
         return
     if not pco_dir:
-        print("WARNING: pco_dir not set — skipping camera projection. "
+        print("WARNING: pco_dir not set -- skipping camera projection. "
               "Set config.inference.camera.<dataset>.pco_dir")
         return
 
@@ -266,7 +266,7 @@ def main():
         sc   = ax.scatter([], [], c=[], cmap='turbo', vmin=0, vmax=1)
         cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label('Prediction Confidence')
-        ax.set_title(f"Radar Occupancy Projection — Sample {idx:03d} | ts={ts_ms}", fontsize=14)
+        ax.set_title(f"Radar Occupancy Projection -- Sample {idx:03d} | ts={ts_ms}", fontsize=14)
         ax.axis('off')
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, f'proj_{idx:03d}.png'), dpi=150, bbox_inches='tight')

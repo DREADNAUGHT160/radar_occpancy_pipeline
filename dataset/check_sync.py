@@ -120,6 +120,10 @@ def analyse_rc(rc_name, src_folder, threshold_ms):
         'Radar_LiDAR_Match_Pct': '',
         'Radar_PCO_Matched':     0,
         'Radar_PCO_Match_Pct':   '',
+        'Prof_LiDAR_Total':      0,
+        'Prof_Within_Threshold': 0,
+        'Prof_Bad_Matches':      0,
+        'Prof_Match_Pct':        '',
         'Notes':                 '',
     }
 
@@ -253,6 +257,7 @@ def analyse_rc(rc_name, src_folder, threshold_ms):
             'PCO_Ts_ms':          '',
             'PCO_Delta_ms':       '',
             'PCO_Ts_Conversion':  '',
+            'Prof_Accept':        '',
         }
 
         if len(lidar_ts_arr) > 0:
@@ -267,9 +272,11 @@ def analyse_rc(rc_name, src_folder, threshold_ms):
             row['LiDAR_Ts_Conversion']= d[2]
             if delta <= threshold_ms:
                 row['LiDAR_Matched'] = 'YES'
+                row['Prof_Accept']   = 'YES'
                 lidar_matched_count += 1
             else:
                 row['LiDAR_Matched'] = f'NO (nearest {delta}ms away)'
+                row['Prof_Accept']   = f'YES (no threshold — delta={delta}ms)'
 
         if len(pco_ts_arr) > 0:
             diffs = np.abs(pco_ts_arr - r_ts)
@@ -294,6 +301,21 @@ def analyse_rc(rc_name, src_folder, threshold_ms):
     summary['Radar_PCO_Matched']      = pco_matched_count
     summary['Radar_PCO_Match_Pct']    = f"{100*pco_matched_count/len(radar_ts):.1f}%"
 
+    # ── Professor's method: lidar-centric, no threshold ───────────────────
+    prof_within = 0
+    prof_bad    = 0
+    if len(lidar_ts_arr) > 0:
+        for l_ts in lidar_ts_arr:
+            diffs = np.abs(radar_ts - l_ts)
+            if diffs.min() <= threshold_ms:
+                prof_within += 1
+            else:
+                prof_bad += 1
+    summary['Prof_LiDAR_Total']       = len(lidar_ts_arr)
+    summary['Prof_Within_Threshold']  = prof_within
+    summary['Prof_Bad_Matches']       = prof_bad
+    summary['Prof_Match_Pct']         = f"{100*prof_within/len(lidar_ts_arr):.1f}%" if len(lidar_ts_arr) > 0 else ''
+
     return summary, frame_rows
 
 
@@ -312,6 +334,7 @@ SUMMARY_COLS = [
     'Threshold_ms',
     'Radar_LiDAR_Matched', 'Radar_LiDAR_Match_Pct',
     'Radar_PCO_Matched',   'Radar_PCO_Match_Pct',
+    'Prof_LiDAR_Total', 'Prof_Within_Threshold', 'Prof_Bad_Matches', 'Prof_Match_Pct',
     'Notes',
 ]
 
@@ -322,6 +345,7 @@ FRAME_COLS = [
     'LiDAR_Delta_ms', 'LiDAR_Ts_Conversion',
     'PCO_Matched',   'PCO_File',   'PCO_Ts_Original',   'PCO_Ts_ms',
     'PCO_Delta_ms',  'PCO_Ts_Conversion',
+    'Prof_Accept',
 ]
 
 
@@ -366,9 +390,10 @@ def main():
         all_summaries.append(summary)
         all_frame_rows.extend(frame_rows)
 
-        print(f"    Radar frames  : {summary['Radar_Mat_Files']}")
-        print(f"    LiDAR matched : {summary['Radar_LiDAR_Matched']}/{summary['Radar_Mat_Files']}  ({summary['Radar_LiDAR_Match_Pct']})")
-        print(f"    PCO   matched : {summary['Radar_PCO_Matched']}/{summary['Radar_Mat_Files']}  ({summary['Radar_PCO_Match_Pct']})")
+        print(f"    Radar frames         : {summary['Radar_Mat_Files']}")
+        print(f"    Our method  (LiDAR)  : {summary['Radar_LiDAR_Matched']}/{summary['Radar_Mat_Files']}  ({summary['Radar_LiDAR_Match_Pct']})")
+        print(f"    Our method  (PCO)    : {summary['Radar_PCO_Matched']}/{summary['Radar_Mat_Files']}  ({summary['Radar_PCO_Match_Pct']})")
+        print(f"    Prof method (LiDAR)  : {summary['Prof_Within_Threshold']}/{summary['Prof_LiDAR_Total']} within {threshold}ms  |  {summary['Prof_Bad_Matches']} bad matches  ({summary['Prof_Match_Pct']})")
         if summary['Notes']:
             print(f"    Notes         : {summary['Notes']}")
         print()
