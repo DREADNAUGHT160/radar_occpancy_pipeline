@@ -8,6 +8,9 @@ Usage:
   python utils/diagnose.py --config configs/train_config.yaml
   python utils/diagnose.py --config configs/train_config.yaml --checkpoint checkpoints/<run_id>/best_model.pth
 
+  # Detect AND delete corrupted runs + clear cache:
+  python utils/diagnose.py --config configs/train_config.yaml --clean
+
 Output:
   diagnostic_output/<timestamp>/
     report.txt          human-readable summary of every check
@@ -25,6 +28,10 @@ import argparse
 import traceback
 import warnings
 warnings.filterwarnings('ignore')
+
+# Force UTF-8 output so box-drawing characters display correctly on all systems
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
 from pathlib import Path
 
@@ -755,40 +762,130 @@ def check_plots(R, config, out_dir):
 # 8. CHECKPOINT FOLDER
 # =============================================================================
 
+MIN_PTH_MB = 1.0   # anything smaller than this is a corrupt/incomplete write
+
+def _is_corrupted(run_path):
+    """Return (corrupted: bool, reason: str) for a run folder."""
+    final = os.path.join(run_path, 'final_model.pth')
+    best  = os.path.join(run_path, 'best_model.pth')
+
+    if not os.path.exists(final) and not os.path.exists(best):
+        return True, "no .pth files found -- training crashed before any checkpoint was saved"
+
+    if not os.path.exists(final):
+        return True, "final_model.pth missing -- training crashed before the last epoch completed"
+
+    size_mb = os.path.getsize(final) / 1024**2
+    if size_mb < MIN_PTH_MB:
+        return True, f"final_model.pth is only {size_mb:.2f} MB -- write was interrupted (file corrupt)"
+
+    if os.path.exists(best):
+        size_mb = os.path.getsize(best) / 1024**2
+        if size_mb < MIN_PTH_MB:
+            return True, f"best_model.pth is only {size_mb:.2f} MB -- write was interrupted (file corrupt)"
+
+    return False, ""
+
+
 def check_checkpoints(R, config):
     R.section("8. Checkpoint Folder")
 
-    out_dir = config.get('logging', {}).get('output_dir', 'checkpoints')
+    ckpt_root = config.get('logging', {}).get('output_dir', 'checkpoints')
 
-    if not os.path.exists(out_dir):
-        R.warn(f"Checkpoint dir does not exist yet: {out_dir}  (normal before first run)")
-        return
+    if not os.path.exists(ckpt_root):
+        R.warn(f"Checkpoint dir does not exist yet: {ckpt_root}  (normal before first run)")
+        return [], ckpt_root
 
-    R.ok(f"Checkpoint dir exists: {out_dir}")
+    R.ok(f"Checkpoint dir exists: {ckpt_root}")
 
-    runs = sorted([d for d in os.listdir(out_dir)
-                   if os.path.isdir(os.path.join(out_dir, d))], reverse=True)
+    runs = sorted([d for d in os.listdir(ckpt_root)
+                   if os.path.isdir(os.path.join(ckpt_root, d))], reverse=True)
 
     if not runs:
-        R.warn("No run folders found inside checkpoint dir -- no training runs recorded yet")
-        return
+        R.warn("No run folders found -- no training runs recorded yet")
+        return [], ckpt_root
 
-    R.info(f"Found {len(runs)} run folder(s). Latest: {runs[0]}")
+    R.info(f"Found {len(runs)} run folder(s)")
 
-    latest = os.path.join(out_dir, runs[0])
-    for fname in ('best_model.pth', 'final_model.pth', 'training.log'):
-        fpath = os.path.join(latest, fname)
-        if os.path.exists(fpath):
-            size_mb = os.path.getsize(fpath) / 1024**2
-            R.ok(f"{fname}: found ({size_mb:.1f} MB)", f'ckpt_{fname}', fpath)
+    corrupted_runs = []
+
+    for run in runs:
+        run_path  = os.path.join(ckpt_root, run)
+        corrupted, reason = _is_corrupted(run_path)
+
+        if corrupted:
+            R.fail(f"CORRUPTED  {run}: {reason}", f'run_{run}', 'corrupted')
+            corrupted_runs.append(run_path)
         else:
-            if fname.endswith('.pth'):
-                R.fail(f"{fname}: NOT found in {latest} -- training may have crashed before saving",
-                       f'ckpt_{fname}', None)
-            else:
-                R.warn(f"{fname}: not found in {latest}", f'ckpt_{fname}', None)
+            # Report sizes of good checkpoints
+            files_info = []
+            for fname in ('best_model.pth', 'final_model.pth'):
+                fpath = os.path.join(run_path, fname)
+                if os.path.exists(fpath):
+                    mb = os.path.getsize(fpath) / 1024**2
+                    files_info.append(f"{fname} ({mb:.1f} MB)")
+            R.ok(f"OK         {run}: {', '.join(files_info)}", f'run_{run}', 'ok')
 
-    R.set('latest_run', latest)
+    if corrupted_runs:
+        R.warn(f"{len(corrupted_runs)} corrupted run(s) detected. "
+               f"Run with --clean to delete them.")
+    else:
+        R.ok("No corrupted runs found")
+
+    R.set('corrupted_runs', corrupted_runs)
+    R.set('ckpt_root', ckpt_root)
+    return corrupted_runs, ckpt_root
+
+
+# =============================================================================
+# 9. CLEAN CORRUPTED RUNS + CACHE
+# =============================================================================
+
+def clean(R, corrupted_runs, ckpt_root, torch_mod):
+    R.section("9. Cleanup")
+
+    # Delete corrupted run folders
+    if not corrupted_runs:
+        R.ok("No corrupted run folders to delete")
+    else:
+        for run_path in corrupted_runs:
+            try:
+                import shutil
+                shutil.rmtree(run_path)
+                R.ok(f"Deleted corrupted run: {run_path}")
+            except Exception as e:
+                R.fail(f"Could not delete {run_path}: {e}")
+
+    # Clear __pycache__ directories
+    pycache_count = 0
+    for dirpath, dirnames, _ in os.walk(ROOT):
+        for d in dirnames:
+            if d == '__pycache__':
+                full = os.path.join(dirpath, d)
+                try:
+                    import shutil
+                    shutil.rmtree(full)
+                    pycache_count += 1
+                except Exception as e:
+                    R.warn(f"Could not delete {full}: {e}")
+    if pycache_count:
+        R.ok(f"Deleted {pycache_count} __pycache__ folder(s)")
+    else:
+        R.info("No __pycache__ folders found")
+
+    # Clear CUDA cache
+    if torch_mod and torch_mod.cuda.is_available():
+        try:
+            torch_mod.cuda.empty_cache()
+            torch_mod.cuda.synchronize()
+            free_gb = torch_mod.cuda.mem_get_info()[0] / 1024**3
+            R.ok(f"CUDA cache cleared -- free VRAM now: {free_gb:.1f} GB")
+        except Exception as e:
+            R.warn(f"CUDA cache clear failed: {e}")
+    else:
+        R.info("No CUDA GPU -- nothing to clear")
+
+    R.info("Cleanup complete")
 
 
 # =============================================================================
@@ -802,6 +899,8 @@ def main():
                         help='Path to a .pth checkpoint to validate')
     parser.add_argument('--out_dir',    default='diagnostic_output',
                         help='Root folder for diagnostic outputs')
+    parser.add_argument('--clean',      action='store_true',
+                        help='Delete corrupted checkpoint runs and clear cache after diagnosis')
     args = parser.parse_args()
 
     run_id  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -813,26 +912,32 @@ def main():
     print(f"{BOLD}  Config     : {args.config}{RESET}")
     print(f"{BOLD}  Output     : {out_dir}{RESET}")
     print(f"{BOLD}  Checkpoint : {args.checkpoint or 'none'}{RESET}")
+    print(f"{BOLD}  Clean mode : {'YES -- will delete corrupted runs + clear cache' if args.clean else 'no'}{RESET}")
     print(f"{BOLD}{'='*60}{RESET}")
 
     R = Report()
     R.set('run_id',     run_id)
     R.set('config',     args.config)
     R.set('checkpoint', args.checkpoint)
+    R.set('clean',      args.clean)
     R.set('generated',  str(datetime.datetime.now()))
 
     # Run all checks
-    torch  = check_environment(R)
-    config = check_config(R, args.config)
+    torch_mod      = check_environment(R)
+    config         = check_config(R, args.config)
+    corrupted_runs = []
 
     if config:
         check_paths(R, config)
-        if torch:
-            check_gpu_memory(R, config, torch)
-            check_dataloader_speed(R, config, torch)
-            check_model(R, config, torch, args.checkpoint)
+        if torch_mod:
+            check_gpu_memory(R, config, torch_mod)
+            check_dataloader_speed(R, config, torch_mod)
+            check_model(R, config, torch_mod, args.checkpoint)
         check_plots(R, config, out_dir)
-        check_checkpoints(R, config)
+        corrupted_runs, _ = check_checkpoints(R, config)
+
+    if args.clean:
+        clean(R, corrupted_runs, None, torch_mod)
 
     # Final summary
     R.section("Summary")
@@ -853,10 +958,10 @@ def main():
     print(f"  Errors   : {RED}{total_err}{RESET}")
     print(f"  Warnings : {YELLOW}{total_warn}{RESET}")
     print(f"\n  Saved to : {os.path.abspath(out_dir)}")
-    print(f"  report.txt  -> full details")
-    print(f"  errors.txt  -> quick triage (send this first)")
-    print(f"  report.json -> machine-readable")
-    print(f"  plots/      -> sample data visualisations")
+    print(f"    report.txt   -> full details")
+    print(f"    errors.txt   -> quick triage (send this first)")
+    print(f"    report.json  -> machine-readable")
+    print(f"    plots/       -> sample data visualisations")
     print(f"{BOLD}{'='*60}{RESET}\n")
 
     if total_err > 0:
