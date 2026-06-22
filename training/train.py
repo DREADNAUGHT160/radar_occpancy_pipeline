@@ -218,6 +218,11 @@ class Trainer:
         print(f"  Run ID  : {self.run_id}")
         print(f"  Epochs  : {num_epochs}  |  LR: {lr}  |  Loss: {self.config['training'].get('loss','?')}")
         print(f"  Output  : {self.config['logging']['output_dir']}")
+        if self.writer:
+            tb_dir = os.path.join(self.config['logging']['output_dir'], 'tensorboard')
+            print(f"  TensorBoard:")
+            print(f"    Run : tensorboard --logdir \"{tb_dir}\"")
+            print(f"    Open: http://localhost:6006")
         print(f"{'='*60}\n")
         self.logger.info(f"Starting training — {num_epochs} epochs  loss={self.criterion}  lr={lr}")
 

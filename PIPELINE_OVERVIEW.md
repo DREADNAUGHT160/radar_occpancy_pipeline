@@ -67,7 +67,7 @@ For each RC folder in `train + val + test`:
    - `max` (default) — NumPy reshape + `.max(axis=1)`, keeps strongest return per 4-bin window
    - `mean` — NumPy reshape + `.mean(axis=1)`, averages the 4-bin window
    - `stride` — `[::4]` simple subsampling, fastest
-   - `torch_max` — `F.max_pool1d(kernel=4, stride=4)`, PyTorch optimised kernel
+   - `torch_max` — `F.max_pool3d(kernel=(4,1,1), stride=(4,1,1))` — exact match to original model_pipeline
 3. Log transform: `10·log10(x)`, clip to `[power_min_val, power_max_val]`, normalise to `[0, 1]`
 
 ### Elevation preprocessing pipeline

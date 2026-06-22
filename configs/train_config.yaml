@@ -98,7 +98,7 @@ model:
   #   max       - numpy max per 4-bin window (default)
   #   mean      - numpy mean per 4-bin window
   #   stride    - simple subsampling [::4]
-  #   torch_max - PyTorch F.max_pool1d (kernel=4, stride=4)
+  #   torch_max - PyTorch F.max_pool3d (kernel=(4,1,1)) — matches original model_pipeline
   doppler_pool: max
 
 training:
