@@ -27,7 +27,11 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def pool_file(src_path, dst_path):
-    """Load a (512, H, W) file, max-pool to (128, H, W) on GPU, save."""
+    """Load a (512, H, W) file, max-pool to (128, H, W), save.
+
+    GPU: F.max_pool3d kernel=(4,1,1)  — fastest, identical to torch_max in dataloader
+    CPU: numpy reshape+max            — faster than PyTorch on CPU
+    """
     arr = np.load(src_path)                              # (512, H, W)
     if arr.shape[0] == 128:
         np.save(dst_path, arr)
@@ -35,10 +39,14 @@ def pool_file(src_path, dst_path):
     if arr.shape[0] != 512:
         return f'unexpected shape {arr.shape}'
 
-    t = torch.from_numpy(arr).float().to(DEVICE)         # (512, H, W)
-    t = t.unsqueeze(0).unsqueeze(0)                      # (1, 1, 512, H, W)
-    t = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))  # (1, 1, 128, H, W)
-    pooled = t.squeeze(0).squeeze(0).cpu().numpy()       # (128, H, W)
+    if DEVICE.type == 'cuda':
+        t      = torch.from_numpy(arr).float().to(DEVICE)           # (512, H, W)
+        t      = t.unsqueeze(0).unsqueeze(0)                        # (1, 1, 512, H, W)
+        t      = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))
+        pooled = t.squeeze(0).squeeze(0).cpu().numpy()              # (128, H, W)
+    else:
+        blocks = arr.reshape(128, 4, arr.shape[1], arr.shape[2])
+        pooled = blocks.max(axis=1)                                 # (128, H, W)
 
     np.save(dst_path, pooled)
     return 'ok'

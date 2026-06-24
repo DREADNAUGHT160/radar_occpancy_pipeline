@@ -71,6 +71,14 @@ python utils/prepool_doppler.py --config configs/train_config.yaml
 
 This runs **once**. After that the dataloader auto-detects `rad_power_pooled/` inside each RC folder and uses it automatically — no config change needed. If you skip this step, the dataloader falls back to runtime pooling as before.
 
+**Pooling method:**
+| Device | Method |
+|---|---|
+| GPU (CUDA) | `F.max_pool3d` kernel=(4,1,1) — PyTorch GPU, fastest |
+| CPU (no GPU) | numpy reshape + max — faster than PyTorch on CPU |
+
+Both produce identical results. The script prints which device it is using at startup.
+
 ---
 
 ## Step 2 — Train
