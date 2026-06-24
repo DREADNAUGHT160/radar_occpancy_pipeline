@@ -20,18 +20,26 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import torch
+import torch.nn.functional as F
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 def pool_file(src_path, dst_path):
-    """Load a (512, H, W) file, max-pool to (128, H, W), save."""
+    """Load a (512, H, W) file, max-pool to (128, H, W) on GPU, save."""
     arr = np.load(src_path)                              # (512, H, W)
     if arr.shape[0] == 128:
-        # Already pooled — just copy
         np.save(dst_path, arr)
         return 'skip'
     if arr.shape[0] != 512:
         return f'unexpected shape {arr.shape}'
-    blocks = arr.reshape(128, 4, arr.shape[1], arr.shape[2])
-    pooled = blocks.max(axis=1)                          # (128, H, W)
+
+    t = torch.from_numpy(arr).float().to(DEVICE)         # (512, H, W)
+    t = t.unsqueeze(0).unsqueeze(0)                      # (1, 1, 512, H, W)
+    t = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))  # (1, 1, 128, H, W)
+    pooled = t.squeeze(0).squeeze(0).cpu().numpy()       # (128, H, W)
+
     np.save(dst_path, pooled)
     return 'ok'
 
@@ -89,9 +97,11 @@ def main():
             rc_list += ds.get(split, [])
         rc_list = list(dict.fromkeys(rc_list))  # deduplicate, preserve order
 
+    device_name = torch.cuda.get_device_name(0) if DEVICE.type == 'cuda' else 'CPU'
     print(f"\nPre-pooling Doppler 512->128 for {len(rc_list)} RC folder(s)")
     print(f"Base dir  : {base_dir}")
-    print(f"Method    : numpy max (4-bin window)")
+    print(f"Device    : {DEVICE} ({device_name})")
+    print(f"Method    : F.max_pool3d kernel=(4,1,1) — same as torch_max in dataloader")
     print(f"Output    : <RC>/rad_power_pooled/\n")
 
     total_done = total_skip = 0
