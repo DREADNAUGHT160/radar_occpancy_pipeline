@@ -31,7 +31,18 @@ class RadarDataset(Dataset):
 
         # Resolve power / elevation directories
         sf = (config or {}).get('dataset', {}).get('subfolders', {})
-        self.power_dir = os.path.join(radar_dir, sf.get('rad_power', 'rad_power'))
+        raw_power_dir    = os.path.join(radar_dir, sf.get('rad_power', 'rad_power'))
+        pooled_power_dir = os.path.join(radar_dir, 'rad_power_pooled')
+
+        # Use pre-pooled folder if it exists — skips runtime Doppler downsampling
+        if os.path.isdir(pooled_power_dir) and \
+                len(glob.glob(os.path.join(pooled_power_dir, '*.npy'))) > 0:
+            self.power_dir      = pooled_power_dir
+            self.doppler_pooled = True
+        else:
+            self.power_dir      = raw_power_dir
+            self.doppler_pooled = False
+
         self.elev_dir  = os.path.join(radar_dir, sf.get('rad_elev',  'rad_elev'))
 
         self.power_paths = sorted(glob.glob(os.path.join(self.power_dir, '*.npy')))
@@ -207,6 +218,10 @@ class RadarDataset(Dataset):
         doppler_pool     = model_cfg.get('doppler_pool', 'max')   # 'max' | 'mean' | 'stride'
 
         # 4× Doppler downsampling: 512 → 128
+        # Skip if data already came from rad_power_pooled/ (pre-pooled on disk)
+        if is_power and getattr(self, 'doppler_pooled', False):
+            return data  # already (128, H, W)
+
         if not use_full_doppler and data.shape[0] == 512:
             if is_power:
                 blocks = data.reshape(128, 4, data.shape[1], data.shape[2])
