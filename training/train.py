@@ -110,15 +110,15 @@ class Trainer:
             for name in train_names:
                 ds = _load(name, augment=True)
                 train_sets.append(ds)
-                self.logger.info(f"{name}: train → {len(ds)} frames")
+                self.logger.info(f"{name}: train -> {len(ds)} frames")
             for name in val_names:
                 ds = _load(name, augment=False)
                 val_sets.append(ds)
-                self.logger.info(f"{name}: val → {len(ds)} frames")
+                self.logger.info(f"{name}: val -> {len(ds)} frames")
             for name in test_names:
                 ds = _load(name, augment=False)
                 test_sets.append(ds)
-                self.logger.info(f"{name}: test → {len(ds)} frames")
+                self.logger.info(f"{name}: test -> {len(ds)} frames")
 
         else:
             # ── Legacy format: single radar_dir + optional extra_datasets ──────
@@ -337,7 +337,7 @@ class Trainer:
                 print(f"  Retrying epoch {epoch+1} with batch_size={new_bs} ...")
                 print(f"{'!'*60}\n")
                 self.logger.warning(
-                    f"CUDA OOM — batch_size {current_bs} → {new_bs}, retrying epoch {epoch+1}")
+                    f"CUDA OOM — batch_size {current_bs} -> {new_bs}, retrying epoch {epoch+1}")
                 self._rebuild_train_loader(new_bs)
                 return self._train_one_epoch(epoch, num_epochs)
 
