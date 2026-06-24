@@ -170,15 +170,23 @@ class RadarDataset(Dataset):
         radar_tensor = self._apply_elevation_mask(radar_tensor)
 
         # Load label
+        label_valid = False
         if label_path and os.path.exists(label_path):
-            label = np.load(label_path)
-            label_tensor = torch.from_numpy(label.astype(np.float32))
-            if label_tensor.ndim == 2:
-                label_tensor = label_tensor.unsqueeze(0)
+            try:
+                label = np.load(label_path)
+                if label.size == 0:
+                    raise ValueError("empty array")
+                label_tensor = torch.from_numpy(label.astype(np.float32))
+                if label_tensor.ndim == 2:
+                    label_tensor = label_tensor.unsqueeze(0)
+                label_valid = True
+            except Exception as e:
+                import warnings
+                warnings.warn(f"Skipping corrupt label file ({e}): {label_path}")
 
+        if label_valid:
             # Apply bounding-box crop if enabled
             label_tensor = self._apply_bbox_filter(label_tensor, label_path, n_cls)
-
             # Align azimuth: LiDAR and radar have opposite azimuth conventions
             label_tensor = torch.flip(label_tensor, [-1])
         else:
