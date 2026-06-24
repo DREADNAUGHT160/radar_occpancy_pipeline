@@ -61,11 +61,21 @@ Output saved to `verification_output/data_check/<RC_folder>/`.
 
 ---
 
+## Step 1c — Pre-pool Doppler (recommended before training)
+
+Pools the Doppler axis from 512 → 128 bins once and saves the results to disk. The dataloader then loads the pre-pooled files directly, skipping the pooling on every batch — faster training with no code changes needed.
+
+```bash
+python utils/prepool_doppler.py --config configs/train_config.yaml
+```
+
+This runs **once**. After that the dataloader auto-detects `rad_power_pooled/` inside each RC folder and uses it automatically — no config change needed. If you skip this step, the dataloader falls back to runtime pooling as before.
+
+---
+
 ## Step 2 — Train
 
 ```bash
-# PowerShell (recommended — helps with GPU memory)
-$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 python training/train.py --config configs/train_config.yaml
 ```
 
