@@ -26,7 +26,7 @@ dataset:
   test:
     - RC019
 
-  batch_size: 2
+  batch_size: 1
   num_workers: 2
   augmentations: true
   sync_threshold_ms: 100

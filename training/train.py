@@ -327,7 +327,10 @@ class Trainer:
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-            except torch.cuda.OutOfMemoryError:
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                if 'out of memory' not in str(e).lower() and \
+                   'cudaErrorMemoryAllocation' not in str(e):
+                    raise
                 torch.cuda.empty_cache()
                 current_bs = self.config['dataset']['batch_size']
                 new_bs     = max(1, current_bs // 2)
