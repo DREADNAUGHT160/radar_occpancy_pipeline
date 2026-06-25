@@ -38,12 +38,17 @@ class RadarDataset(Dataset):
         if os.path.isdir(pooled_power_dir) and \
                 len(glob.glob(os.path.join(pooled_power_dir, '*.npy'))) > 0:
             self.power_dir      = pooled_power_dir
-            self.doppler_pooled = True
+            self.doppler_pooled = True   # both power + elev pre-pooled
         else:
             self.power_dir      = raw_power_dir
             self.doppler_pooled = False
 
-        self.elev_dir  = os.path.join(radar_dir, sf.get('rad_elev',  'rad_elev'))
+        raw_elev_dir    = os.path.join(radar_dir, sf.get('rad_elev', 'rad_elev'))
+        pooled_elev_dir = os.path.join(radar_dir, 'rad_elev_pooled')
+        self.elev_dir   = pooled_elev_dir \
+            if os.path.isdir(pooled_elev_dir) and \
+               len(glob.glob(os.path.join(pooled_elev_dir, '*.npy'))) > 0 \
+            else raw_elev_dir
 
         self.power_paths = sorted(glob.glob(os.path.join(self.power_dir, '*.npy')))
         if not self.power_paths:
@@ -218,8 +223,8 @@ class RadarDataset(Dataset):
         doppler_pool     = model_cfg.get('doppler_pool', 'max')   # 'max' | 'mean' | 'stride'
 
         # 4× Doppler downsampling: 512 → 128
-        # Skip if data already came from rad_power_pooled/ (pre-pooled on disk)
-        if is_power and getattr(self, 'doppler_pooled', False):
+        # Skip if data already came from rad_power_pooled/ or rad_elev_pooled/
+        if getattr(self, 'doppler_pooled', False) and data.shape[0] == 128:
             return data  # already (128, H, W)
 
         if not use_full_doppler and data.shape[0] == 512:

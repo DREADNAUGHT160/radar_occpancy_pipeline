@@ -52,32 +52,54 @@ def pool_file(src_path, dst_path):
     return 'ok'
 
 
-def prepool_rc(rc_dir, force=False):
-    src_dir = os.path.join(rc_dir, 'rad_power')
-    dst_dir = os.path.join(rc_dir, 'rad_power_pooled')
+def stride_file(src_path, dst_path):
+    """Load a (512, H, W) elevation file, stride to (128, H, W), save."""
+    arr = np.load(src_path)
+    if arr.shape[0] == 128:
+        np.save(dst_path, arr)
+        return 'skip'
+    if arr.shape[0] != 512:
+        return f'unexpected shape {arr.shape}'
+    np.save(dst_path, arr[::4, :, :])
+    return 'ok'
 
-    if not os.path.isdir(src_dir):
+
+def prepool_rc(rc_dir, force=False):
+    results = {}
+    for src_name, dst_name, fn in [
+        ('rad_power', 'rad_power_pooled', pool_file),
+        ('rad_elev',  'rad_elev_pooled',  stride_file),
+    ]:
+        src_dir = os.path.join(rc_dir, src_name)
+        dst_dir = os.path.join(rc_dir, dst_name)
+
+        if not os.path.isdir(src_dir):
+            continue
+
+        files = sorted(f for f in os.listdir(src_dir) if f.endswith('.npy'))
+        if not files:
+            continue
+
+        os.makedirs(dst_dir, exist_ok=True)
+        done = skipped = 0
+        for fname in tqdm(files, desc=f"{os.path.basename(rc_dir)}/{src_name}", leave=False):
+            dst = os.path.join(dst_dir, fname)
+            if os.path.exists(dst) and not force:
+                skipped += 1
+                continue
+            result = fn(os.path.join(src_dir, fname), dst)
+            if result == 'ok':
+                done += 1
+            elif result == 'skip':
+                skipped += 1
+        results[src_name] = (done, skipped)
+
+    if not results:
         return 0, 0, f"rad_power/ not found in {rc_dir}"
 
-    files = sorted(f for f in os.listdir(src_dir) if f.endswith('.npy'))
-    if not files:
-        return 0, 0, "no .npy files in rad_power/"
-
-    os.makedirs(dst_dir, exist_ok=True)
-
-    done = skipped = 0
-    for fname in tqdm(files, desc=os.path.basename(rc_dir), leave=False):
-        dst = os.path.join(dst_dir, fname)
-        if os.path.exists(dst) and not force:
-            skipped += 1
-            continue
-        result = pool_file(os.path.join(src_dir, fname), dst)
-        if result == 'ok':
-            done += 1
-        elif result == 'skip':
-            skipped += 1
-
-    return done, skipped, None
+    total_done = sum(v[0] for v in results.values())
+    total_skip = sum(v[1] for v in results.values())
+    return total_done, total_skip, None
 
 
 def main():
