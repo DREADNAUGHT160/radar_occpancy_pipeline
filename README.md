@@ -63,21 +63,24 @@ Output saved to `verification_output/data_check/<RC_folder>/`.
 
 ## Step 1c — Pre-pool Doppler (recommended before training)
 
-Pools the Doppler axis from 512 → 128 bins once and saves the results to disk. The dataloader then loads the pre-pooled files directly, skipping the pooling on every batch — faster training with no code changes needed.
+Pools the Doppler axis (512 → 128) once and saves to disk. The dataloader auto-detects the pre-pooled folders and uses them directly — no config change needed. If skipped, the dataloader falls back to runtime pooling as before.
+
+Run the two scripts **in order** (elevation after power finishes):
 
 ```bash
+# Power cube — run first
 python utils/prepool_doppler.py --config configs/train_config.yaml
+
+# Elevation cube — run after power finishes
+python utils/prepool_elev.py --config configs/train_config.yaml
 ```
 
-This runs **once**. After that the dataloader auto-detects `rad_power_pooled/` inside each RC folder and uses it automatically — no config change needed. If you skip this step, the dataloader falls back to runtime pooling as before.
+| Script | Input | Output folder | Method |
+|---|---|---|---|
+| `prepool_doppler.py` | `rad_power/` | `rad_power_pooled/` | Max pool — GPU: `F.max_pool3d` / CPU: numpy max |
+| `prepool_elev.py` | `rad_elev/` | `rad_elev_pooled/` | Max pool — GPU: `F.max_pool3d` / CPU: numpy max |
 
-**What it pre-processes:**
-| Cube | Method | Device |
-|---|---|---|
-| `rad_power` | Max pool — GPU: `F.max_pool3d` kernel=(4,1,1) / CPU: numpy max | whichever is available |
-| `rad_elev` | Stride `[::4]` — same as dataloader runtime behaviour | CPU (numpy) |
-
-The script prints which device it is using at startup. Both produce identical results to runtime processing.
+Each script prints the device it is using at startup. Both fall back to CPU numpy automatically if no GPU is available.
 
 ---
 

@@ -1,13 +1,14 @@
 """
-Pre-pool Doppler axis (512 -> 128) for all RC folders and save to rad_power_pooled/.
+Pre-pool elevation cube Doppler axis (512 -> 128) for all RC folders.
+Saves results to rad_elev_pooled/ alongside the original rad_elev/.
 
-This runs once on the dataset. The dataloader will then load from rad_power_pooled/
-directly, skipping the per-batch pooling entirely.
+Run this AFTER prepool_doppler.py has finished.
+The dataloader auto-detects rad_elev_pooled/ and uses it directly.
 
 Usage:
-  python utils/prepool_doppler.py --config configs/train_config.yaml
-  python utils/prepool_doppler.py --config configs/train_config.yaml --rc RC019
-  python utils/prepool_doppler.py --config configs/train_config.yaml --splits train val
+  python utils/prepool_elev.py --config configs/train_config.yaml
+  python utils/prepool_elev.py --config configs/train_config.yaml --rc RC019
+  python utils/prepool_elev.py --config configs/train_config.yaml --splits train val
 """
 import os
 import sys
@@ -27,12 +28,12 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def pool_file(src_path, dst_path):
-    """Load a (512, H, W) file, max-pool to (128, H, W), save.
+    """Load a (512, H, W) elevation file, max-pool to (128, H, W), save.
 
-    GPU: F.max_pool3d kernel=(4,1,1)  — fastest, identical to torch_max in dataloader
-    CPU: numpy reshape+max            — faster than PyTorch on CPU
+    GPU: F.max_pool3d kernel=(4,1,1)
+    CPU: numpy reshape + max
     """
-    arr = np.load(src_path)                              # (512, H, W)
+    arr = np.load(src_path)
     if arr.shape[0] == 128:
         np.save(dst_path, arr)
         return 'skip'
@@ -40,28 +41,28 @@ def pool_file(src_path, dst_path):
         return f'unexpected shape {arr.shape}'
 
     if DEVICE.type == 'cuda':
-        t      = torch.from_numpy(arr).float().to(DEVICE)           # (512, H, W)
+        t      = torch.from_numpy(arr).float().to(DEVICE)
         t      = t.unsqueeze(0).unsqueeze(0)                        # (1, 1, 512, H, W)
         t      = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))
         pooled = t.squeeze(0).squeeze(0).cpu().numpy()              # (128, H, W)
     else:
         blocks = arr.reshape(128, 4, arr.shape[1], arr.shape[2])
-        pooled = blocks.max(axis=1)                                 # (128, H, W)
+        pooled = blocks.max(axis=1)
 
     np.save(dst_path, pooled)
     return 'ok'
 
 
 def prepool_rc(rc_dir, force=False):
-    src_dir = os.path.join(rc_dir, 'rad_power')
-    dst_dir = os.path.join(rc_dir, 'rad_power_pooled')
+    src_dir = os.path.join(rc_dir, 'rad_elev')
+    dst_dir = os.path.join(rc_dir, 'rad_elev_pooled')
 
     if not os.path.isdir(src_dir):
-        return 0, 0, f"rad_power/ not found in {rc_dir}"
+        return 0, 0, f"rad_elev/ not found in {rc_dir}"
 
     files = sorted(f for f in os.listdir(src_dir) if f.endswith('.npy'))
     if not files:
-        return 0, 0, "no .npy files in rad_power/"
+        return 0, 0, "no .npy files in rad_elev/"
 
     os.makedirs(dst_dir, exist_ok=True)
     done = skipped = 0
@@ -87,7 +88,7 @@ def main():
     parser.add_argument('--splits',  nargs='+', default=['train', 'val', 'test'],
                         help='Which splits to process (default: all)')
     parser.add_argument('--force',   action='store_true',
-                        help='Re-pool even if rad_power_pooled/ file already exists')
+                        help='Re-pool even if rad_elev_pooled/ file already exists')
     args = parser.parse_args()
 
     with open(args.config, encoding='utf-8') as f:
@@ -102,14 +103,14 @@ def main():
         rc_list = []
         for split in args.splits:
             rc_list += ds.get(split, [])
-        rc_list = list(dict.fromkeys(rc_list))  # deduplicate, preserve order
+        rc_list = list(dict.fromkeys(rc_list))
 
     device_name = torch.cuda.get_device_name(0) if DEVICE.type == 'cuda' else 'CPU'
-    print(f"\nPre-pooling Doppler 512->128 for {len(rc_list)} RC folder(s)")
+    print(f"\nPre-pooling elevation Doppler 512->128 for {len(rc_list)} RC folder(s)")
     print(f"Base dir  : {base_dir}")
     print(f"Device    : {DEVICE} ({device_name})")
-    print(f"Method    : F.max_pool3d kernel=(4,1,1) — same as torch_max in dataloader")
-    print(f"Output    : <RC>/rad_power_pooled/\n")
+    print(f"Method    : F.max_pool3d kernel=(4,1,1)  [CPU fallback: numpy max]")
+    print(f"Output    : <RC>/rad_elev_pooled/\n")
 
     total_done = total_skip = 0
     for rc_name in rc_list:
@@ -127,7 +128,7 @@ def main():
     print(f"  Newly pooled : {total_done} files")
     print(f"  Already done : {total_skip} files")
     print(f"{'='*50}\n")
-    print("Done. The dataloader will now use rad_power_pooled/ automatically.")
+    print("Done. The dataloader will now use rad_elev_pooled/ automatically.")
 
 
 if __name__ == '__main__':
