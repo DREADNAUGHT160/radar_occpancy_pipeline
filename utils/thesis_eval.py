@@ -510,12 +510,16 @@ def _save_pred_plot(rc_name, ts_str, frame_idx,
         return im
 
     # Row 0 -- Input
-    _ishow(fig.add_subplot(gs[0, 0]), radar_bev.numpy(),
-           'Input: Power BEV',  'turbo', 'Azimuth (deg)', 'Range (Bins)', az_ticks=True)
+    bev_arr = radar_bev.numpy()
+    bev_max = float(bev_arr.max()) if bev_arr.max() > 0 else 1.0
+    _ishow(fig.add_subplot(gs[0, 0]), bev_arr,
+           'Input: Power BEV',  'turbo', 'Azimuth (deg)', 'Range (Bins)', vmin=0, vmax=bev_max, az_ticks=True)
+    ae_max = float(ae_map.max()) if ae_map.max() > 0 else 1.0
     _ishow(fig.add_subplot(gs[0, 1]), ae_map,
-           'Input: AE Map',     'turbo', 'Azimuth (deg)', 'Elevation (Bins)', az_ticks=True)
+           'Input: AE Map',     'turbo', 'Azimuth (deg)', 'Elevation (Bins)', vmin=0, vmax=ae_max, az_ticks=True)
+    re_max = float(re_map.max()) if re_map.max() > 0 else 1.0
     _ishow(fig.add_subplot(gs[0, 2]), re_map,
-           'Input: RE Map',     'turbo', 'Range (Bins)',  'Elevation (Bins)')
+           'Input: RE Map',     'turbo', 'Range (Bins)',  'Elevation (Bins)', vmin=0, vmax=re_max)
 
     # Row 1 -- GT
     no_gt = np.zeros((64, 256))
