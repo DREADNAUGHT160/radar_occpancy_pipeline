@@ -59,7 +59,7 @@ class Trainer:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if torch.cuda.is_available():
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark = False
         self.scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
         self.logger.info(f"Device: {self.device}")
 
