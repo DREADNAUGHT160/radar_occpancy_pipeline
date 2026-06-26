@@ -1,3 +1,11 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FALLBACK EXPERIMENT — try this if max-pool training (train_config.yaml) does
+# not learn well.  The only difference is elev_pool: stride instead of max.
+# Steps:
+#   1. python utils/prepool_elev.py --config configs/train_config_stride_elev.yaml --force
+#   2. python train.py --config configs/train_config_stride_elev.yaml
+# Checkpoints go to checkpoints_stride_elev/ so the max-pool run is untouched.
+# ─────────────────────────────────────────────────────────────────────────────
 experiment_name: radar_occupancy_stride_elev
 
 dataset:
