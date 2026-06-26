@@ -214,8 +214,8 @@ class RadarDataset(Dataset):
     # ── Preprocessing helpers ─────────────────────────────────────────────────
 
     def _preprocess(self, data, is_power=True):
-        # Transpose to (D, H, W) if stored as (H, W, D)
-        if data.ndim == 3 and data.shape[2] > data.shape[0]:
+        # Transpose to (D, H, W) if stored as (H, W, D) — only raw 512-bin files need this
+        if data.ndim == 3 and data.shape[2] == 512:
             data = data.transpose(2, 0, 1)
 
         model_cfg        = self.config.get('model', {}) if self.config else {}
