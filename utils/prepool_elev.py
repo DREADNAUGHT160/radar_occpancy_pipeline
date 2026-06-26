@@ -28,10 +28,10 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def pool_file(src_path, dst_path):
-    """Load a (512, H, W) elevation file, max-pool to (128, H, W), save.
+    """Load a (512, H, W) elevation file, stride-sample to (128, H, W), save.
 
-    GPU: F.max_pool3d kernel=(4,1,1)
-    CPU: numpy reshape + max
+    Elevation values are signed radians — max/mean pooling would bias toward
+    the most positive angle. Stride-4 matches the original model_pipeline exactly.
     """
     arr = np.load(src_path)
     if arr.shape[0] == 128:
@@ -40,15 +40,7 @@ def pool_file(src_path, dst_path):
     if arr.shape[0] != 512:
         return f'unexpected shape {arr.shape}'
 
-    if DEVICE.type == 'cuda':
-        t      = torch.from_numpy(arr).float().to(DEVICE)
-        t      = t.unsqueeze(0).unsqueeze(0)                        # (1, 1, 512, H, W)
-        t      = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))
-        pooled = t.squeeze(0).squeeze(0).cpu().numpy()              # (128, H, W)
-    else:
-        blocks = arr.reshape(128, 4, arr.shape[1], arr.shape[2])
-        pooled = blocks.max(axis=1)
-
+    pooled = arr[::4, :, :]   # stride-4: indices 0,4,8,...,508 → (128, H, W)
     np.save(dst_path, pooled)
     return 'ok'
 
@@ -109,7 +101,7 @@ def main():
     print(f"\nPre-pooling elevation Doppler 512->128 for {len(rc_list)} RC folder(s)")
     print(f"Base dir  : {base_dir}")
     print(f"Device    : {DEVICE} ({device_name})")
-    print(f"Method    : F.max_pool3d kernel=(4,1,1)  [CPU fallback: numpy max]")
+    print(f"Method    : stride-4 (arr[::4]) — matches original model_pipeline")
     print(f"Output    : <RC>/rad_elev_pooled/\n")
 
     total_done = total_skip = 0
