@@ -95,6 +95,8 @@ Each script prints the device it is using at startup. Both fall back to CPU nump
 
 ## Step 2 — Train
 
+### Method 1 — Max-pool elevation (default)
+
 ```bash
 python training/train.py --config configs/train_config.yaml
 ```
@@ -110,6 +112,26 @@ Best model is saved automatically to `checkpoints/<run_id>/best_model.pth`.
 ```
 
 If the GPU runs out of memory, the batch size is automatically halved and the epoch retried.
+
+---
+
+### Method 2 — Stride elevation (fallback if Method 1 training fails)
+
+If the model is not learning with max-pool elevation (loss not decreasing, IoU stays near zero), try stride elevation instead. Stride samples the true elevation angle at each Doppler velocity rather than always picking the most positive angle, which can give the model a cleaner geometric signal.
+
+**Step 1 — Re-pool elevation with stride:**
+```bash
+python utils/prepool_elev.py --config configs/train_config_stride_elev.yaml --force
+```
+
+**Step 2 — Train with the stride config:**
+```bash
+python training/train.py --config configs/train_config_stride_elev.yaml
+```
+
+Checkpoints go to `checkpoints_stride_elev/` so the Method 1 run is untouched and both can be compared side by side.
+
+> To switch back to max-pool: run `prepool_elev.py --config configs/train_config.yaml --force` and retrain with `train_config.yaml`.
 
 ---
 
