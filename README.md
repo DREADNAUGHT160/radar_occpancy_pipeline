@@ -78,9 +78,18 @@ python utils/prepool_elev.py --config configs/train_config.yaml
 | Script | Input | Output folder | Method |
 |---|---|---|---|
 | `prepool_doppler.py` | `rad_power/` | `rad_power_pooled/` | Max pool — GPU: `F.max_pool3d` / CPU: numpy max |
-| `prepool_elev.py` | `rad_elev/` | `rad_elev_pooled/` | Max pool — GPU: `F.max_pool3d` / CPU: numpy max |
+| `prepool_elev.py` | `rad_elev/` | `rad_elev_pooled/` | Controlled by `model.elev_pool` in config (default: `max`) |
 
 Each script prints the device it is using at startup. Both fall back to CPU numpy automatically if no GPU is available.
+
+**Elevation pooling method** (`model.elev_pool` in train config):
+
+| Value | Behaviour |
+|---|---|
+| `max` *(default)* | `F.max_pool3d` kernel=(4,1,1) — takes peak elevation angle per 4-bin window |
+| `stride` | `arr[::4]` — samples every 4th Doppler bin, preserving the true signed angle |
+
+> If you change `elev_pool`, re-run `prepool_elev.py --force` so the pre-pooled files match, then retrain from scratch.
 
 ---
 
@@ -176,6 +185,7 @@ verification_output/eval/
 | `dataset.train / val / test` | Lists of RC folder names |
 | `dataset.batch_size` | Start at 6; auto-halved on OOM |
 | `model.doppler_pool` | `max` (default) / `mean` / `stride` / `torch_max` |
+| `model.elev_pool` | `max` (default) / `stride` — elevation Doppler pooling method |
 | `training.epochs` | Number of training epochs |
 | `training.loss` | `weighted_bce` (default) — see [PIPELINE_OVERVIEW.md](PIPELINE_OVERVIEW.md) for others |
 | `training.pos_weight` | Weight for occupied voxels (default 10.0) |
