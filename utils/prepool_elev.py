@@ -27,11 +27,11 @@ import torch.nn.functional as F
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def pool_file(src_path, dst_path):
-    """Load a (512, H, W) elevation file, max-pool to (128, H, W), save.
+def pool_file(src_path, dst_path, method='max'):
+    """Load a (512, H, W) elevation file, pool to (128, H, W), save.
 
-    GPU: F.max_pool3d kernel=(4,1,1)
-    CPU: numpy reshape + max
+    method='max'    — F.max_pool3d kernel=(4,1,1)  [GPU] / numpy max  [CPU]
+    method='stride' — arr[::4]  (matches original model_pipeline)
     """
     arr = np.load(src_path)
     if arr.shape[0] == 128:
@@ -40,20 +40,23 @@ def pool_file(src_path, dst_path):
     if arr.shape[0] != 512:
         return f'unexpected shape {arr.shape}'
 
-    if DEVICE.type == 'cuda':
-        t      = torch.from_numpy(arr).float().to(DEVICE)
-        t      = t.unsqueeze(0).unsqueeze(0)                        # (1, 1, 512, H, W)
-        t      = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))
-        pooled = t.squeeze(0).squeeze(0).cpu().numpy()              # (128, H, W)
-    else:
-        blocks = arr.reshape(128, 4, arr.shape[1], arr.shape[2])
-        pooled = blocks.max(axis=1)
+    if method == 'stride':
+        pooled = arr[::4, :, :]
+    else:                                                           # 'max' (default)
+        if DEVICE.type == 'cuda':
+            t      = torch.from_numpy(arr).float().to(DEVICE)
+            t      = t.unsqueeze(0).unsqueeze(0)                   # (1, 1, 512, H, W)
+            t      = F.max_pool3d(t, kernel_size=(4, 1, 1), stride=(4, 1, 1))
+            pooled = t.squeeze(0).squeeze(0).cpu().numpy()         # (128, H, W)
+        else:
+            blocks = arr.reshape(128, 4, arr.shape[1], arr.shape[2])
+            pooled = blocks.max(axis=1)
 
     np.save(dst_path, pooled)
     return 'ok'
 
 
-def prepool_rc(rc_dir, force=False):
+def prepool_rc(rc_dir, force=False, method='max'):
     src_dir = os.path.join(rc_dir, 'rad_elev')
     dst_dir = os.path.join(rc_dir, 'rad_elev_pooled')
 
@@ -71,7 +74,7 @@ def prepool_rc(rc_dir, force=False):
         if os.path.exists(dst) and not force:
             skipped += 1
             continue
-        result = pool_file(os.path.join(src_dir, fname), dst)
+        result = pool_file(os.path.join(src_dir, fname), dst, method=method)
         if result == 'ok':
             done += 1
         elif result == 'skip':
@@ -109,13 +112,14 @@ def main():
     print(f"\nPre-pooling elevation Doppler 512->128 for {len(rc_list)} RC folder(s)")
     print(f"Base dir  : {base_dir}")
     print(f"Device    : {DEVICE} ({device_name})")
-    print(f"Method    : F.max_pool3d kernel=(4,1,1)  [CPU fallback: numpy max]")
+    method = cfg.get('model', {}).get('elev_pool', 'max')
+    print(f"Method    : {method}  ('max'=F.max_pool3d / 'stride'=arr[::4])")
     print(f"Output    : <RC>/rad_elev_pooled/\n")
 
     total_done = total_skip = 0
     for rc_name in rc_list:
         rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
-        done, skipped, err = prepool_rc(rc_dir, force=args.force)
+        done, skipped, err = prepool_rc(rc_dir, force=args.force, method=method)
         if err:
             print(f"  [SKIP] {rc_name}: {err}")
         else:

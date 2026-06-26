@@ -221,6 +221,7 @@ class RadarDataset(Dataset):
         model_cfg        = self.config.get('model', {}) if self.config else {}
         use_full_doppler = model_cfg.get('use_full_doppler', False)
         doppler_pool     = model_cfg.get('doppler_pool', 'max')   # 'max' | 'mean' | 'stride'
+        elev_pool        = model_cfg.get('elev_pool', 'max')      # 'max' | 'stride'
 
         # 4× Doppler downsampling: 512 → 128
         # Skip pooling if data already came from rad_power_pooled/ or rad_elev_pooled/,
@@ -242,7 +243,12 @@ class RadarDataset(Dataset):
                 else:                          # 'max' (default, numpy)
                     data = blocks.max(axis=1)
             else:
-                data = data[::4, :, :]
+                # Elevation: stride or max
+                if elev_pool == 'stride':
+                    data = data[::4, :, :]
+                else:                          # 'max' (default)
+                    blocks = data.reshape(128, 4, data.shape[1], data.shape[2])
+                    data   = blocks.max(axis=1)
 
         norm = (self.config or {}).get('dataset', {}).get('normalization', {})
         if not norm.get('enable', False):

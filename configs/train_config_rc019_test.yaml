@@ -53,9 +53,10 @@ model:
   encoder_out_channels: 64
   num_classes: 64
   doppler_pool: max
+  elev_pool: max     # 'max' = max_pool3d (default) | 'stride' = arr[::4]
 
 training:
-  epochs: 2
+  epochs: 3
   lr: 0.001
   optimizer: Adam
   weight_decay: 1e-4
