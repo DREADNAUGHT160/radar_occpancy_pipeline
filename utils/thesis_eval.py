@@ -267,8 +267,10 @@ def compute_ap(frames_data):
     prec   = tp_cum / (tp_cum + fp_cum + 1e-8)
     rec    = tp_cum / in_box_arr.sum()
 
-    trapz = getattr(np, 'trapezoid', np.trapz)
-    return float(trapz(prec, rec))
+    try:
+        return float(np.trapezoid(prec, rec))
+    except AttributeError:
+        return float(np.trapz(prec, rec))
 
 
 def compute_pd_pfa(frames_data, threshold):
