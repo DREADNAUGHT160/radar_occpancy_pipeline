@@ -223,11 +223,11 @@ class RadarDataset(Dataset):
         doppler_pool     = model_cfg.get('doppler_pool', 'max')   # 'max' | 'mean' | 'stride'
 
         # 4× Doppler downsampling: 512 → 128
-        # Skip if data already came from rad_power_pooled/ or rad_elev_pooled/
-        if getattr(self, 'doppler_pooled', False) and data.shape[0] == 128:
-            return data  # already (128, H, W)
+        # Skip pooling if data already came from rad_power_pooled/ or rad_elev_pooled/,
+        # but still fall through to normalization below.
+        already_pooled = getattr(self, 'doppler_pooled', False) and data.shape[0] == 128
 
-        if not use_full_doppler and data.shape[0] == 512:
+        if not already_pooled and not use_full_doppler and data.shape[0] == 512:
             if is_power:
                 blocks = data.reshape(128, 4, data.shape[1], data.shape[2])
                 if doppler_pool == 'mean':
