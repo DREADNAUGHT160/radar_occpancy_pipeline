@@ -315,10 +315,11 @@ def compute_weather_metrics(frames, threshold, weather):
                 cd_vals.append(val)
         cd = float(np.mean(cd_vals)) if cd_vals else np.nan
 
+    # Point density: group frames by box_range band, compute pts_in_box/box_volume per frame
     bands       = ((0, 5), (5, 10), (10, 15), (15, 20))
     density_acc = {f"{a}-{b}m": [] for a, b in bands}
     for fd in frames:
-        if fd['pts'] is None or fd['box_corners'] is None:
+        if fd['pts'] is None or fd['box_corners'] is None or np.isnan(fd.get('box_range', np.nan)):
             continue
         scores = fd['scores']
         mask   = (scores >= threshold) if scores is not None else np.ones(len(fd['pts']), dtype=bool)
@@ -328,9 +329,12 @@ def compute_weather_metrics(frames, threshold, weather):
         pts_in = pts_t[points_in_box(pts_t, fd['box_corners'])]
         if len(pts_in) == 0:
             continue
-        den = point_density_by_band(pts_in, fd['box_volume'], bands)
-        for k, v in den.items():
-            density_acc[k].append(v)
+        # bin this frame into the band that matches its box range
+        r = fd['box_range']
+        for a, b in bands:
+            if a <= r < b:
+                density_acc[f"{a}-{b}m"].append(len(pts_in) / (fd['box_volume'] + 1e-9))
+                break
 
     density = {k: float(np.mean(v)) if v else np.nan for k, v in density_acc.items()}
 
