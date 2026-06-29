@@ -102,7 +102,7 @@ automatically by `prepare_dataset.py`.
 The `cfar/` folder is NOT created by `prepare_dataset.py`. To add it, run:
 
 ```
-python dataset/copy_cfar.py --config configs/prepare_config.yaml
+python dataset/copy_cfar.py --config configs/eval_weather.yaml
 ```
 
 This copies the SAVEROAD radar `.txt` files from the raw data source into each RC folder.
@@ -112,10 +112,12 @@ If `cfar/` is absent, the evaluation runs without CFAR comparison (DL only).
 
 ## Output Folder Structure
 
-All outputs are written to `out_dir` (set in `eval_config.yaml`, default: `verification_output/eval`):
+All outputs are written to `out_dir` (set in each config file):
+- `eval_basic.yaml` → `verification_output/basic/`
+- `eval_weather.yaml` → `verification_output/weather/`
 
 ```
-verification_output/eval/
+verification_output/weather/
   weather_results.csv                          <- all metrics in one CSV file
   thesis_figures/
     RC019/
@@ -136,35 +138,35 @@ verification_output/eval/
 
 ---
 
-## Setup — Edit eval_config.yaml
+## Setup — Edit the Config Files
 
-Open `configs/eval_config.yaml` and set these three things:
+Two config files are provided — one per mode. Open the relevant one and set:
 
-### 1. Dataset root folder
-
-```yaml
-base_dir: 'D:/dataset'    # path to the folder containing RC subfolders
-```
-
-### 2. Model checkpoint
+### eval_basic.yaml — quick check
 
 ```yaml
-checkpoint: 'D:/path/to/best_model.pth'
+checkpoint: 'checkpoints/20260626_125729/best_model.pth'   # path to trained model
+base_dir:   '/media/SSD2/radar_dataset/'                    # prepared dataset root
+
+basic:
+  dataset: 'RC019'   # any single RC folder to test
 ```
 
-### 3. Which RC folders are clear / fog / rain
+### eval_weather.yaml — full thesis evaluation
 
 ```yaml
-weather:
-  weather_splits:
-    clear: [RC019, RC020]   # list all RC folders for clear weather
-    fog:   [RC021, RC022]   # list all RC folders for fog
-    rain:  [RC023]          # list all RC folders for rain
+checkpoint: 'checkpoints/20260626_125729/best_model.pth'   # path to trained model
+base_dir:   '/media/SSD2/radar_dataset/'                    # prepared dataset root
+
+eval_splits:
+  clear: [RC019, RC031, RC032, RC033, RC036]   # move fog/rain RC folders below
+  fog:   []
+  rain:  []
 ```
 
-Leave a list empty (`[]`) if you have no data for that condition.
+Leave any condition empty (`[]`) if you have no data for it.
 
-### Optional — Thesis figures settings
+### Optional — Thesis figures settings (in either config)
 
 ```yaml
 thesis_plots:
@@ -206,7 +208,7 @@ python utils/thesis_eval.py --config configs/eval_weather.yaml --checkpoint path
 ### Add CFAR data to an existing prepared dataset
 
 ```
-python dataset/copy_cfar.py --config configs/prepare_config.yaml
+python dataset/copy_cfar.py --config configs/eval_weather.yaml
 ```
 
 ---
@@ -230,9 +232,9 @@ CFAR points use a Y-axis sign correction automatically (SAVEROAD exports have Y 
 | File | Purpose |
 |------|---------|
 | `utils/thesis_eval.py` | Main evaluation script |
-| `configs/eval_config.yaml` | All settings — edit this before running |
+| `configs/eval_basic.yaml` | Config for basic mode (quick sanity check, one RC folder) |
+| `configs/eval_weather.yaml` | Config for weather mode (full thesis evaluation, all test RCs) |
 | `dataset/copy_cfar.py` | One-time script to add CFAR data to prepared dataset folders |
-| `configs/prepare_config.yaml` | Settings for copy_cfar.py (raw_data_dir, base_dir, RC lists) |
 
 ---
 
