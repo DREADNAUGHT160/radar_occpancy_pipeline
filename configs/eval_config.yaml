@@ -23,7 +23,7 @@ model:
   encoder_out_channels: 64
   num_classes: 64
 
-checkpoint: 'D:/thesis data/thesis/model_pipeline/checkpoints/20260417_090255/best_model.pth'
+checkpoint: 'D:/thesis data/checkpoints_rc019_test/20260626_185207/best_model.pth'
 
 
 # ── Dataset paths ─────────────────────────────────────────────────────────────

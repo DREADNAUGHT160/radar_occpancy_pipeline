@@ -177,24 +177,30 @@ thesis_plots:
 
 ## How to Run
 
-### Full thesis evaluation (weather mode)
+### Quick sanity check (basic mode)
+
+Runs on one RC folder. Confirms the model loads and produces predictions.
 
 ```
-python utils/thesis_eval.py --config configs/eval_config.yaml
+python utils/thesis_eval.py --config configs/eval_basic.yaml
 ```
+
+Output saved to `verification_output/basic/`
+
+### Full thesis evaluation (weather mode)
+
+Runs across all test RC folders. Produces all metrics, degradation table, and thesis figures.
+
+```
+python utils/thesis_eval.py --config configs/eval_weather.yaml
+```
+
+Output saved to `verification_output/weather/`
 
 ### Override checkpoint without editing the config
 
 ```
-python utils/thesis_eval.py --config configs/eval_config.yaml --checkpoint path/to/best_model.pth
-```
-
-### Quick sanity check (basic mode)
-
-Set `eval_mode: basic` in `eval_config.yaml`, then:
-
-```
-python utils/thesis_eval.py --config configs/eval_config.yaml
+python utils/thesis_eval.py --config configs/eval_weather.yaml --checkpoint path/to/best_model.pth
 ```
 
 ### Add CFAR data to an existing prepared dataset
