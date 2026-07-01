@@ -60,9 +60,10 @@ weather:
   threshold: 0.4
 
 thesis_plots:
-  enable:         true
-  n_plots:        5
-  raw_prediction: true
-  threshold:      0.4
+  enable:            true
+  n_plots:           5
+  raw_prediction:    true
+  threshold:         0.4
+  camera_projection: false   # set true and fill in saveroad_dir above to enable
 
 out_dir: verification_output/weather

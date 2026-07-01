@@ -615,8 +615,10 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
     import matplotlib
     matplotlib.use('Agg')
 
-    sf           = config.get('subfolders', {})
-    saveroad_dir = config.get('saveroad_dir', '').strip()
+    sf              = config.get('subfolders', {})
+    saveroad_dir    = config.get('saveroad_dir', '').strip()
+    tp_cfg          = config.get('thesis_plots', {})
+    do_camera       = bool(tp_cfg.get('camera_projection', True)) and bool(saveroad_dir)
 
     for rc_name in rc_folders:
         rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
@@ -700,7 +702,7 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
                 raw_prediction=raw_prediction
             )
 
-            if has_camera and len(txt_ts) > 0:
+            if do_camera and has_camera and len(txt_ts) > 0:
                 diff = np.abs(txt_ts - ts_ms)
                 best = int(np.argmin(diff))
                 if diff[best] < 200:
