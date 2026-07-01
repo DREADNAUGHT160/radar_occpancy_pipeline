@@ -656,65 +656,73 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
 
         print(f"\n  Generating thesis plots: {rc_name}  ({len(indices)} of {n} frames)")
 
+        saved_plots = 0
         for idx in indices:
-            sample     = ds.matched_data[idx]
-            ts_ms      = _extract_ts_ms(sample['power'])
-            ts_str     = os.path.basename(sample['power']).replace('.npy', '')
-            radar_tensor, label_tensor = ds[idx]
+            try:
+                sample     = ds.matched_data[idx]
+                ts_ms      = _extract_ts_ms(sample['power'])
+                ts_str     = os.path.basename(sample['power']).replace('.npy', '')
+                radar_tensor, label_tensor = ds[idx]
 
-            power_np = radar_tensor[0].numpy()   # (D, R, A) preprocessed power
-            elev_np  = radar_tensor[1].numpy()   # (D, R, A) preprocessed elevation
+                power_np = radar_tensor[0].numpy()
+                elev_np  = radar_tensor[1].numpy()
 
-            with torch.no_grad():
-                pred_prob = torch.sigmoid(
-                    model(radar_tensor.unsqueeze(0).to(device))
-                )[0].cpu()
+                with torch.no_grad():
+                    pred_prob = torch.sigmoid(
+                        model(radar_tensor.unsqueeze(0).to(device))
+                    )[0].cpu()
 
-            pred_np  = pred_prob.numpy()
-            ae_map, re_map = _compute_ae_re_maps(power_np, elev_np, config)
+                pred_np  = pred_prob.numpy()
+                ae_map, re_map = _compute_ae_re_maps(power_np, elev_np, config)
 
-            radar_bev = torch.from_numpy(power_np).max(dim=0)[0]
-            pred_bev  = pred_prob.max(dim=0)[0]
-            pred_fv   = pred_prob.max(dim=1)[0]
-            pred_sv   = pred_prob.max(dim=2)[0]
+                radar_bev = torch.from_numpy(power_np).max(dim=0)[0]
+                pred_bev  = pred_prob.max(dim=0)[0]
+                pred_fv   = pred_prob.max(dim=1)[0]
+                pred_sv   = pred_prob.max(dim=2)[0]
 
-            # GT label from matched pair (already flipped by dataloader)
-            if label_tensor is not None:
-                try:
-                    gt      = label_tensor.float() if isinstance(label_tensor, torch.Tensor) \
-                              else torch.from_numpy(label_tensor.astype(np.float32))
-                    gt_bev  = gt.max(dim=0)[0]
-                    gt_fv   = gt.max(dim=1)[0]
-                    gt_sv   = gt.max(dim=2)[0]
-                except Exception:
+                if label_tensor is not None:
+                    try:
+                        gt      = label_tensor.float() if isinstance(label_tensor, torch.Tensor) \
+                                  else torch.from_numpy(label_tensor.astype(np.float32))
+                        gt_bev  = gt.max(dim=0)[0]
+                        gt_fv   = gt.max(dim=1)[0]
+                        gt_sv   = gt.max(dim=2)[0]
+                    except Exception:
+                        gt_bev = gt_fv = gt_sv = None
+                else:
                     gt_bev = gt_fv = gt_sv = None
-            else:
-                gt_bev = gt_fv = gt_sv = None
 
-            cam_threshold = 0.05 if raw_prediction else threshold
+                cam_threshold = 0.05 if raw_prediction else threshold
 
-            _save_pred_plot(
-                rc_name, ts_str, idx,
-                radar_bev, ae_map, re_map,
-                gt_bev, gt_fv, gt_sv,
-                pred_bev, pred_fv, pred_sv,
-                os.path.join(plot_dir, f'frame_{idx:03d}_{ts_str}.png'),
-                raw_prediction=raw_prediction
-            )
+                _save_pred_plot(
+                    rc_name, ts_str, idx,
+                    radar_bev, ae_map, re_map,
+                    gt_bev, gt_fv, gt_sv,
+                    pred_bev, pred_fv, pred_sv,
+                    os.path.join(plot_dir, f'frame_{idx:03d}_{ts_str}.png'),
+                    raw_prediction=raw_prediction
+                )
+                saved_plots += 1
 
-            if do_camera and has_camera and len(txt_ts) > 0:
-                diff = np.abs(txt_ts - ts_ms)
-                best = int(np.argmin(diff))
-                if diff[best] < 200:
-                    _save_camera_proj(
-                        txt_files[best], pco_dir, pred_np,
-                        cam_threshold, rc_name, ts_str, idx,
-                        os.path.join(cam_dir, f'frame_{idx:03d}_{ts_str}.png'),
-                        saveroad_dir=saveroad_dir
-                    )
+                if do_camera and has_camera and len(txt_ts) > 0:
+                    diff = np.abs(txt_ts - ts_ms)
+                    best = int(np.argmin(diff))
+                    if diff[best] < 200:
+                        try:
+                            _save_camera_proj(
+                                txt_files[best], pco_dir, pred_np,
+                                cam_threshold, rc_name, ts_str, idx,
+                                os.path.join(cam_dir, f'frame_{idx:03d}_{ts_str}.png'),
+                                saveroad_dir=saveroad_dir
+                            )
+                        except Exception as e:
+                            print(f"    [WARN] Camera frame {idx}: {e}")
 
-        print(f"    Plots  -> {os.path.abspath(plot_dir)}")
-        if has_camera:
+            except Exception as e:
+                print(f"    [WARN] Frame {idx} skipped: {e}")
+
+        print(f"    Plots  -> {os.path.abspath(plot_dir)}  ({saved_plots}/{len(indices)} saved)")
+        if do_camera and has_camera:
             print(f"    Camera -> {os.path.abspath(cam_dir)}")
 
 
