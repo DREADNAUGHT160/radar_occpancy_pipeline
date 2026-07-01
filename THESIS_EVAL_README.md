@@ -2,213 +2,174 @@
 
 ## Overview
 
-`utils/thesis_eval.py` is the main evaluation script for the radar 4D occupancy prediction thesis.
-It loads a trained deep learning (DL) model, runs inference on one or more RC datasets, and
-produces all quantitative metrics and thesis figures in one command.
+`utils/thesis_eval.py` evaluates a trained 4D radar occupancy prediction model
+across weather conditions and generates all thesis figures in one command.
 
-It runs in two modes:
+Two modes:
 
-| Mode | Purpose |
-|------|---------|
-| `basic` | Quick sanity check — per-voxel IoU / Precision / Recall on one dataset |
-| `weather` | Full thesis evaluation — AP, P_d, P_fa, Chamfer Distance, degradation, range-band analysis, figures |
-
----
-
-## What the Program Produces
-
-### Metrics (printed to terminal and saved to CSV)
-
-**1. Results Table**
-Average Precision (AP), Detection Probability (P_d), False Alarm Rate (P_fa) for all
-weather conditions. Chamfer Distance (CD) is **clear weather only** — LiDAR point clouds
-in fog/rain are corrupted and cannot serve as a reliable geometric ground truth.
-
-```
-Weather  Method     AP    P_d   P_fa        CD
-------------------------------------------------
-clear    DL      0.784  1.000  0.163    0.2722
-clear    CFAR    0.281  0.473  0.966    0.9407
-fog      DL      0.701  0.923  0.218       N/A
-fog      CFAR    0.198  0.604  0.387       N/A
-rain     DL      0.654  0.871  0.251       N/A
-rain     CFAR    0.143  0.521  0.412       N/A
-```
-
-**2. Degradation Table**
-How much each metric drops from clear weather to fog/rain (lower % = more robust).
-
-```
-Weather  Method  AP deg%  P_d deg%  P_fa deg%
-fog      DL        12.3%      0.0%     +45.2%
-```
-
-**3. Point Density Table**
-Average predicted points per m^3 inside the GT bounding box, split by range band.
-
-```
-Weather  Method     0-5m    5-10m   10-15m   15-20m
-clear    DL      165.106   35.302    0.000    0.000
-```
-
-**4. Range-Band Detection Table**
-AP, P_d, P_fa broken down by how far the target is from the sensor.
-
-```
-Weather  Method Band      n     AP    P_d   P_fa
-clear    DL     0-5m     16  0.844  1.000  0.121
-clear    DL     5-10m    39  0.714  1.000  0.230
-```
-
-If CFAR data is present, all tables include a CFAR row for comparison.
-If CFAR data is absent, only DL rows appear — no errors.
+| Mode | Config | Purpose |
+|------|--------|---------|
+| `basic` | `eval_basic.yaml` | Quick sanity check — IoU / Precision / Recall on one RC folder |
+| `weather` | `eval_weather.yaml` | Full thesis evaluation — AP, P_d, P_fa, CD, degradation, range-band, figures |
 
 ---
 
-### Thesis Figures (saved as PNG)
+## Step-by-Step Workflow
 
-**Prediction plots** — 3-row mosaic for 5 equally spaced frames per RC folder:
-- Row 1: Radar input — Power BEV, AE Map (elevation x azimuth), RE Map (elevation x range)
-- Row 2: GT LiDAR occupancy — BEV, Front View, Side View
-- Row 3: DL prediction probability — BEV, Front View, Side View
+### Step 1 — Prepare the dataset
 
-**Camera projection** — camera image with radar occupancy points projected onto it
-(only generated if the `pco/` folder exists inside the RC dataset folder).
-
----
-
-## Required Folder Structure
-
-The dataset root (`base_dir` in config) must contain one subfolder per RC recording:
+If not already done, run `prepare_dataset.py` on each raw RC folder.
+This creates `rad_power/`, `rad_elev/`, `labels/`, `calib/`, `pco/`, and `cfar/`
+inside each RC folder under `base_dir`.
 
 ```
-base_dir/
-  RC019/
-    rad_power/          <- radar power cubes (.npy files, one per frame)
-    rad_elev/           <- radar elevation cubes (.npy files, one per frame)
-    labels/             <- LiDAR occupancy labels (.npy files, 64x256x256)
-    calib/              <- bounding box annotation files (.txt from labels_new2)
-    cfar/               <- CFAR radar point clouds (.txt, optional)
-    pco/                <- camera images (.png, optional — for camera projection)
-  RC020/
-    rad_power/
-    rad_elev/
-    ...
+python dataset/prepare_dataset.py --config configs/train_config.yaml
 ```
 
-The `rad_power/`, `rad_elev/`, `labels/`, `calib/`, and `pco/` folders are created
-automatically by `prepare_dataset.py`.
+### Step 2 — Update calibration and CFAR (if calibration was updated)
 
-The `cfar/` folder is NOT created by `prepare_dataset.py`. To add it, run:
-
-```
-python dataset/copy_cfar.py --config configs/eval_weather.yaml
-```
-
-This copies the SAVEROAD radar `.txt` files from the raw data source into each RC folder.
-If `cfar/` is absent, the evaluation runs without CFAR comparison (DL only).
-
----
-
-## Output Folder Structure
-
-All outputs are written to `out_dir` (set in each config file):
-- `eval_basic.yaml` → `verification_output/basic/`
-- `eval_weather.yaml` → `verification_output/weather/`
+If the professor has updated calibration files in the raw SAVEROAD data,
+or if CFAR is missing from the prepared dataset, run:
 
 ```
-verification_output/weather/
-  weather_results.csv                          <- all metrics in one CSV file
-  thesis_figures/
-    RC019/
-      prediction_plots/
-        frame_005_1649675877.203.png           <- 3-row mosaic plot
-        frame_027_1649675879.114.png
-        frame_054_...png
-        frame_081_...png
-        frame_103_...png
-      camera_projection/                       <- only if pco/ exists
-        frame_005_1649675877.203.png
-        frame_027_...png
-        ...
-    RC020/
-      prediction_plots/
-        ...
+python dataset/update_calib_cfar.py --config configs/eval_weather.yaml
 ```
 
----
+This copies:
+- `data/labels_new2/*.txt` → `calib/`  *(overwrites — picks up updated calibration)*
+- `data/radar/*.txt`       → `cfar/`   *(skips files already present)*
 
-## Setup — Edit the Config Files
+Requires `raw_data_dir` to be set in the config.
+To update a single RC folder only:
 
-Two config files are provided — one per mode. Open the relevant one and set:
+```
+python dataset/update_calib_cfar.py --config configs/eval_weather.yaml --rc RC019
+```
 
-### eval_basic.yaml — quick check
+### Step 3 — Edit the config
+
+Open `configs/eval_weather.yaml` and set:
 
 ```yaml
-checkpoint: 'checkpoints/20260626_125729/best_model.pth'   # path to trained model
-base_dir:   '/media/SSD2/radar_dataset/'                    # prepared dataset root
-
-basic:
-  dataset: 'RC019'   # any single RC folder to test
-```
-
-### eval_weather.yaml — full thesis evaluation
-
-```yaml
-checkpoint: 'checkpoints/20260626_125729/best_model.pth'   # path to trained model
+checkpoint: 'checkpoints/20260626_125729/best_model.pth'   # trained model weights
 base_dir:   '/media/SSD2/radar_dataset/'                    # prepared dataset root
 
 eval_splits:
-  clear: [RC019, RC031, RC032, RC033, RC036]   # move fog/rain RC folders below
+  clear: [RC019, RC031, RC032, RC033, RC036]   # assign each RC to its condition
   fog:   []
   rain:  []
 ```
 
 Leave any condition empty (`[]`) if you have no data for it.
 
-### Optional — Thesis figures settings (in either config)
+### Step 4 — Quick sanity check (basic mode)
 
-```yaml
-thesis_plots:
-  enable:    true    # set false to skip figure generation entirely
-  n_plots:   5       # number of frames per RC folder (equally spaced)
-  threshold: 0.4     # confidence threshold for camera projection
-```
-
----
-
-## How to Run
-
-### Quick sanity check (basic mode)
-
-Runs on one RC folder. Confirms the model loads and produces predictions.
+Run on one RC folder first to confirm the model loads and predicts correctly.
 
 ```
 python utils/thesis_eval.py --config configs/eval_basic.yaml
 ```
 
-Output saved to `verification_output/basic/`
+Output → `verification_output/basic/`
+Check that prediction plots appear and metrics look reasonable before running the full eval.
 
-### Full thesis evaluation (weather mode)
+### Step 5 — Full thesis evaluation (weather mode)
 
-Runs across all test RC folders. Produces all metrics, degradation table, and thesis figures.
+Runs across all RC folders in `eval_splits`. Produces all metrics and thesis figures.
 
 ```
 python utils/thesis_eval.py --config configs/eval_weather.yaml
 ```
 
-Output saved to `verification_output/weather/`
+Output → `verification_output/weather/`
 
-### Override checkpoint without editing the config
+---
+
+## What the Program Produces
+
+### Metrics — `verification_output/weather/weather_results.csv`
+
+**Results Table** — AP, P_d, P_fa, Chamfer Distance per condition:
+```
+Weather  Method     AP    P_d   P_fa        CD
+clear    DL      0.897  0.944  0.048    0.2194
+clear    CFAR    0.281  0.473  0.966    0.9407
+fog      DL      0.701  0.923  0.218       N/A
+rain     DL      0.654  0.871  0.251       N/A
+```
+CD is clear-only — fog/rain LiDAR is unreliable as geometric ground truth.
+
+**Degradation Table** — % drop from clear to fog/rain (lower = more robust):
+```
+Weather  Method  AP deg%  P_d deg%  P_fa deg%
+fog      DL        12.3%      0.0%     +45.2%
+```
+
+**Point Density Table** — predicted points/m³ inside GT box by range band:
+```
+Weather  Method     0-5m    5-10m   10-15m   15-20m
+clear    DL       56.425   36.960    9.506    1.921
+```
+
+**Range-Band Detection** — AP / P_d / P_fa split by target distance:
+```
+Weather  Method Band      n     AP    P_d   P_fa
+clear    DL     0-5m     57  0.888  1.000  0.057
+clear    DL     5-10m   239  0.916  1.000  0.040
+clear    DL     10-15m  180  0.913  1.000  0.017
+clear    DL     15-20m  180  0.731  0.917  0.166
+```
+
+If `cfar/` exists for an RC folder, CFAR rows are added to every table automatically.
+If `cfar/` is absent, only DL rows appear — no errors.
+
+### Thesis Figures — `verification_output/weather/thesis_figures/`
+
+**Prediction plots** — 5 equally spaced frames per RC folder, 3-row mosaic:
+- Row 1: Radar input — Power BEV | AE Map (elev × azimuth) | RE Map (elev × range)
+- Row 2: GT LiDAR occupancy — BEV | Front View | Side View
+- Row 3: DL prediction probability — BEV | Front View | Side View
+
+**Camera projection** — camera image with radar points projected onto it
+(only if `pco/` folder and calibration exist, and `camera_projection: true` in config).
+
+If any individual frame fails during plot generation, a `[WARN]` is printed and
+the remaining frames continue — plots are always generated no matter what.
 
 ```
-python utils/thesis_eval.py --config configs/eval_weather.yaml --checkpoint path/to/best_model.pth
+verification_output/weather/
+  weather_results.csv
+  thesis_figures/
+    RC019/
+      prediction_plots/
+        frame_005_1649675877.203.png
+        frame_027_1649675879.114.png
+        frame_054_...png
+        frame_081_...png
+        frame_103_...png
+      camera_projection/         <- only if camera_projection: true in config
+        frame_005_...png
+        ...
+    RC031/
+      prediction_plots/
+        ...
 ```
 
-### Add CFAR data to an existing prepared dataset
+---
+
+## Required Folder Structure
 
 ```
-python dataset/copy_cfar.py --config configs/eval_weather.yaml
+base_dir/
+  RC019/
+    rad_power/     <- radar power cubes (.npy, one per frame)
+    rad_elev/      <- radar elevation cubes (.npy, one per frame)
+    labels/        <- LiDAR occupancy labels (.npy, 64×256×256)
+    calib/         <- calibration + annotation files (.txt from labels_new2)
+    pco/           <- camera images (.png)         [optional]
+    cfar/          <- CFAR point clouds (.txt)     [optional — for DL vs CFAR table]
+  RC031/
+    ...
 ```
 
 ---
@@ -217,13 +178,13 @@ python dataset/copy_cfar.py --config configs/eval_weather.yaml
 
 | Metric | Definition |
 |--------|-----------|
-| **AP** | Average Precision — area under the precision-recall curve. Points inside the GT bounding box are true positives; points outside are false positives. Higher is better. |
+| **AP** | Average Precision — area under the precision-recall curve. Points inside the GT bounding box = true positives; outside = false positives. Higher is better. |
 | **P_d** | Detection probability — fraction of frames where at least one predicted point falls inside the GT bounding box. Higher is better. |
-| **P_fa** | False alarm rate — fraction of all predicted points that fall outside the GT bounding box. Lower is better. |
-| **CD** | Chamfer Distance — mean nearest-neighbour distance between predicted points and GT LiDAR points (meters). Lower is better. **Clear weather only** — fog/rain LiDAR is unreliable so CD shows N/A for those conditions. |
-| **Density** | Average number of predicted points per m^3 inside the GT bounding box per range band. |
+| **P_fa** | False alarm rate — fraction of all predicted points outside the GT bounding box. Lower is better. |
+| **CD** | Chamfer Distance — mean nearest-neighbour distance to GT LiDAR points (meters). Lower is better. Clear weather only. |
+| **Density** | Average predicted points per m³ inside the GT bounding box, by range band. |
 
-CFAR points use a Y-axis sign correction automatically (SAVEROAD exports have Y inverted relative to the LiDAR coordinate frame).
+CFAR points have Y-axis sign corrected automatically (SAVEROAD exports have Y inverted vs LiDAR frame).
 
 ---
 
@@ -232,9 +193,10 @@ CFAR points use a Y-axis sign correction automatically (SAVEROAD exports have Y 
 | File | Purpose |
 |------|---------|
 | `utils/thesis_eval.py` | Main evaluation script |
-| `configs/eval_basic.yaml` | Config for basic mode (quick sanity check, one RC folder) |
-| `configs/eval_weather.yaml` | Config for weather mode (full thesis evaluation, all test RCs) |
-| `dataset/copy_cfar.py` | One-time script to add CFAR data to prepared dataset folders |
+| `configs/eval_basic.yaml` | Config for basic mode (Step 4) |
+| `configs/eval_weather.yaml` | Config for weather mode (Step 5) |
+| `dataset/update_calib_cfar.py` | Update calibration + copy CFAR from raw source (Step 2) |
+| `dataset/copy_cfar.py` | Legacy: copy CFAR only (use update_calib_cfar.py instead) |
 
 ---
 
