@@ -553,7 +553,9 @@ def _save_pred_plot(rc_name, ts_str, frame_idx,
 
 
 def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
-                      rc_name, ts_str, frame_idx, out_path):
+                      rc_name, ts_str, frame_idx, out_path, saveroad_dir=''):
+    if not saveroad_dir or not os.path.isdir(saveroad_dir):
+        return
     try:
         import cv2
     except ImportError:
@@ -562,6 +564,12 @@ def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from utils.project_to_image import project_to_image
+
+    sys.path.insert(0, saveroad_dir)
+    try:
+        from tools import project_points_v2_withPC as project_points_mod
+    except ImportError:
+        return
 
     img_name, K, r_t, radar_to_lidar = parse_calibration(calib_txt)
     if not img_name:
@@ -583,7 +591,7 @@ def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
         return
 
     img_rgb = cv2.cvtColor(
-        project_to_image(pts_3d, probs, img, K, r_t, None),
+        project_to_image(pts_3d, probs, img, K, r_t, project_points_mod),
         cv2.COLOR_BGR2RGB
     )
 
@@ -607,7 +615,8 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
     import matplotlib
     matplotlib.use('Agg')
 
-    sf = config.get('subfolders', {})
+    sf           = config.get('subfolders', {})
+    saveroad_dir = config.get('saveroad_dir', '').strip()
 
     for rc_name in rc_folders:
         rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
@@ -698,7 +707,8 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
                     _save_camera_proj(
                         txt_files[best], pco_dir, pred_np,
                         cam_threshold, rc_name, ts_str, idx,
-                        os.path.join(cam_dir, f'frame_{idx:03d}_{ts_str}.png')
+                        os.path.join(cam_dir, f'frame_{idx:03d}_{ts_str}.png'),
+                        saveroad_dir=saveroad_dir
                     )
 
         print(f"    Plots  -> {os.path.abspath(plot_dir)}")

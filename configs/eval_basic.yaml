@@ -20,6 +20,10 @@ model:
 base_dir: '/media/SSD2/radar_dataset/'
 raw_data_dir: ''
 
+# Path to the SAVEROAD_DataLoader toolkit folder (needed for camera projection figures).
+# Leave empty to skip camera projection and only generate prediction mosaic plots.
+saveroad_dir: ''   # e.g. '/media/SSD2/SAVEROAD_DataLoader'
+
 subfolders:
   rad_power: rad_power
   rad_elev:  rad_elev
