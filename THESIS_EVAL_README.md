@@ -5,12 +5,14 @@
 `utils/thesis_eval.py` evaluates a trained 4D radar occupancy prediction model
 across weather conditions and generates all thesis figures in one command.
 
-Two modes:
+Two modes, one config file (`eval_config.yaml`):
 
-| Mode | Config | Purpose |
-|------|--------|---------|
-| `basic` | `eval_basic.yaml` | Quick sanity check — IoU / Precision / Recall on one RC folder |
-| `weather` | `eval_weather.yaml` | Full thesis evaluation — AP, P_d, P_fa, CD, degradation, range-band, figures |
+| Mode | Purpose |
+|------|---------|
+| `basic` | Quick sanity check — IoU / Precision / Recall on one RC folder |
+| `weather` | Full thesis evaluation — AP, P_d, P_fa, CD, degradation, range-band, figures |
+
+Switch between modes by changing `eval_mode` in `configs/eval_config.yaml`.
 
 ---
 
@@ -32,7 +34,7 @@ If the professor has updated calibration files in the raw SAVEROAD data,
 or if CFAR is missing from the prepared dataset, run:
 
 ```
-python dataset/update_calib_cfar.py --config configs/eval_weather.yaml
+python dataset/update_calib_cfar.py --config configs/eval_config.yaml
 ```
 
 This copies:
@@ -43,12 +45,12 @@ Requires `raw_data_dir` to be set in the config.
 To update a single RC folder only:
 
 ```
-python dataset/update_calib_cfar.py --config configs/eval_weather.yaml --rc RC019
+python dataset/update_calib_cfar.py --config configs/eval_config.yaml --rc RC019
 ```
 
 ### Step 3 — Edit the config
 
-Open `configs/eval_weather.yaml` and set:
+Open `configs/eval_config.yaml` and set:
 
 ```yaml
 checkpoint: 'checkpoints/20260626_125729/best_model.pth'   # trained model weights
@@ -64,30 +66,30 @@ Leave any condition empty (`[]`) if you have no data for it.
 
 ### Step 4 — Quick sanity check (basic mode)
 
-Run on one RC folder first to confirm the model loads and predicts correctly.
+Set `eval_mode: basic` in `eval_config.yaml`, then run:
 
 ```
-python utils/thesis_eval.py --config configs/eval_basic.yaml
+python utils/thesis_eval.py --config configs/eval_config.yaml
 ```
 
-Output → `verification_output/basic/`
+Output → `verification_output/eval/`
 Check that prediction plots appear and metrics look reasonable before running the full eval.
 
 ### Step 5 — Full thesis evaluation (weather mode)
 
-Runs across all RC folders in `eval_splits`. Produces all metrics and thesis figures.
+Set `eval_mode: weather` in `eval_config.yaml`, then run:
 
 ```
-python utils/thesis_eval.py --config configs/eval_weather.yaml
+python utils/thesis_eval.py --config configs/eval_config.yaml
 ```
 
-Output → `verification_output/weather/`
+Output → `verification_output/eval/`
 
 ---
 
 ## What the Program Produces
 
-### Metrics — `verification_output/weather/weather_results.csv`
+### Metrics — `verification_output/eval/weather_results.csv`
 
 **Results Table** — AP, P_d, P_fa, Chamfer Distance per condition:
 ```
@@ -193,8 +195,7 @@ CFAR points have Y-axis sign corrected automatically (SAVEROAD exports have Y in
 | File | Purpose |
 |------|---------|
 | `utils/thesis_eval.py` | Main evaluation script |
-| `configs/eval_basic.yaml` | Config for basic mode (Step 4) |
-| `configs/eval_weather.yaml` | Config for weather mode (Step 5) |
+| `configs/eval_config.yaml` | Single config — set `eval_mode: basic` or `weather` |
 | `dataset/update_calib_cfar.py` | Update calibration + copy CFAR from raw source (Step 2) |
 | `dataset/copy_cfar.py` | Legacy: copy CFAR only (use update_calib_cfar.py instead) |
 

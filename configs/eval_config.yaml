@@ -1,20 +1,20 @@
 # =============================================================================
 # Thesis Evaluation Config
 # =============================================================================
-# Single config file for all evaluation steps:
-#   1. thesis_eval.py  -- metrics + thesis figures
-#   2. copy_cfar.py    -- copy CFAR files from raw source into dataset folders
 #
-# Steps to set up:
-#   a) Fill in raw_data_dir and base_dir below.
-#   b) List RC folders under eval_splits by weather condition.
-#   c) Set checkpoint path.
-#   d) Run copy_cfar.py once if CFAR data is needed.
-#   e) Run thesis_eval.py for full evaluation.
+# Steps:
+#   1. Set checkpoint and base_dir below
+#   2. Fill in eval_splits with your RC folders by weather condition
+#   3. Set raw_data_dir if you need to run update_calib_cfar.py
+#   4. Set eval_mode:  'basic'   -> quick sanity check on one RC folder
+#                      'weather' -> full thesis evaluation across all RC folders
+#   5. Run:  python utils/thesis_eval.py --config configs/eval_config.yaml
 # =============================================================================
 
 
-# ── Model ─────────────────────────────────────────────────────────────────────
+# ── Model checkpoint ──────────────────────────────────────────────────────────
+checkpoint: 'checkpoints/20260626_125729/best_model.pth'
+
 model:
   name: resnet18_radar
   in_channels: 2
@@ -23,53 +23,29 @@ model:
   encoder_out_channels: 64
   num_classes: 64
 
-checkpoint: 'D:/thesis data/checkpoints_rc019_test/20260626_185207/best_model.pth'
-
 
 # ── Dataset paths ─────────────────────────────────────────────────────────────
-
-# Root of the original SAVEROAD raw data collections.
-# Each collection is a subfolder named like  18_RC019, 12_RC013, etc.
-# Used by copy_cfar.py to locate CFAR source files.
-# Leave empty if CFAR has already been copied into base_dir.
-raw_data_dir: ''     # e.g. 'E:/DataCollectionApril2022_11_03'
-
 # Root of the prepared dataset (created by prepare_dataset.py).
-# Each RC evaluation folder lives here as  <base_dir>/<RC_NAME>/
-base_dir: 'D:/dataset'
+base_dir: '/media/SSD2/radar_dataset/'
 
-# Subfolder names inside each prepared RC folder.
-# These match what prepare_dataset.py creates — only change if folders
-# were renamed manually.
-subfolders:
-  rad_power: rad_power   # radar power cubes (.npy)
-  rad_elev:  rad_elev    # radar elevation cubes (.npy)
-  labels:    labels      # LiDAR occupancy labels (.npy, 64x256x256)
-  pco:       pco         # camera images (.png)
-  calib:     calib       # bounding box annotation files (.txt, from data/labels_new2)
-  cfar:      cfar        # CFAR radar point clouds (.txt, copied from data/radar)
+# Root of the original SAVEROAD raw data collections (needed for update_calib_cfar.py).
+# Leave empty if not running that script.
+raw_data_dir: ''   # e.g. '/media/SSD2/raw_collections/'
 
 # Path to CFAR files inside each raw SAVEROAD source folder.
-# copy_cfar.py looks here:
-#   <raw_data_dir>/<NN>_<RC>/<cfar_src_subfolder>/*.txt
-# and copies them to:
-#   <base_dir>/<RC>/<subfolders.cfar>/
-# Only change this if the professor stored CFAR files under a different name.
 cfar_src_subfolder: 'data/radar'
 
+# Path to the SAVEROAD_DataLoader toolkit (needed for camera projection figures).
+# Leave empty to skip camera projection.
+saveroad_dir: ''   # e.g. '/media/SSD2/SAVEROAD_DataLoader'
 
-# ── Evaluation datasets ────────────────────────────────────────────────────────
-# These are UNSEEN datasets — not used during model training.
-# Assign each RC folder to its weather condition (clear / fog / rain).
-# thesis_eval.py uses these to compute per-condition metrics and degradation.
-#
-# How to find the RC folder name:
-#   The prepared dataset folder is  <base_dir>/<RC_NAME>/
-#   e.g. D:/dataset/RC019/  ->  RC_NAME is RC019
-eval_splits:
-  clear: [RC019]   # e.g. [RC019, RC020, RC025]
-  fog:   []        # e.g. [RC021, RC022]
-  rain:  []        # e.g. [RC023, RC024]
+subfolders:
+  rad_power: rad_power
+  rad_elev:  rad_elev
+  labels:    labels
+  pco:       pco
+  calib:     calib
+  cfar:      cfar
 
 
 # ── Normalization (must match training settings) ───────────────────────────────
@@ -85,24 +61,27 @@ normalization:
   power_threshold: -60.0
 
 
+# ── Evaluation datasets ────────────────────────────────────────────────────────
+# Test split — model has never seen these RC folders.
+# Training used:   RC002-RC008, RC014-RC016, RC020-RC022, RC029-RC030,
+#                  RC041-RC043, RC050-RC054, RC062-RC073
+# Validation used: RC009-RC013
+# Move RC folders between conditions to match actual recording weather.
+eval_splits:
+  clear: [RC019, RC031, RC032, RC033, RC036]   # RC019 confirmed clear; check others
+  fog:   []    # move fog RC folders here
+  rain:  []    # move rain RC folders here
+
+
 # ── Evaluation mode ───────────────────────────────────────────────────────────
-#
-# basic   -- Quick check: per-voxel IoU / Precision / Recall on one RC folder.
-#            Use this first to confirm the model loads and predicts correctly.
-#
-# weather -- Full thesis evaluation across all eval_splits conditions:
-#              AP, P_d, P_fa, Chamfer Distance
-#              Degradation % (clear -> fog/rain)
-#              Point density per range band
-#              Range-band AP/P_d/P_fa breakdown
-#            If cfar/ exists in an RC folder, adds DL vs CFAR comparison.
-#
-eval_mode: weather   # 'basic'  or  'weather'
+# basic   -> quick sanity check: IoU / Precision / Recall on one RC folder
+# weather -> full thesis evaluation: AP, P_d, P_fa, CD, degradation, figures
+eval_mode: weather   # change to 'basic' for quick check
 
 
 # ── Basic mode settings ───────────────────────────────────────────────────────
 basic:
-  dataset:   'RC019'   # single RC folder name to evaluate
+  dataset:   'RC019'   # single RC folder to check
   threshold: 0.4
 
 
@@ -112,20 +91,12 @@ weather:
 
 
 # ── Thesis figures ────────────────────────────────────────────────────────────
-# Generated automatically after weather evaluation completes.
-# For each RC folder: saves n_plots equally spaced prediction mosaic plots
-# and (if pco/ exists) camera projection images.
-#
-# Output:
-#   <out_dir>/thesis_figures/<RC>/prediction_plots/frame_NNN_<ts>.png
-#   <out_dir>/thesis_figures/<RC>/camera_projection/frame_NNN_<ts>.png
-#
 thesis_plots:
-  enable:         true
-  n_plots:        5       # frames per RC folder (equally spaced from start to end)
-  raw_prediction: true    # true  -> show raw probability output, no threshold applied
-                          # false -> apply threshold below before projecting points
-  threshold:      0.4     # used only when raw_prediction: false
+  enable:            true
+  n_plots:           5       # frames per RC folder (equally spaced)
+  raw_prediction:    true    # true -> raw probability output; false -> apply threshold
+  threshold:         0.4     # used only when raw_prediction: false
+  camera_projection: false   # set true and fill in saveroad_dir above to enable
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
