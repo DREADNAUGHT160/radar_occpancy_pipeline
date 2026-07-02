@@ -68,9 +68,9 @@ normalization:
 # Validation used: RC009-RC013
 # Move RC folders between conditions to match actual recording weather.
 eval_splits:
-  clear: [RC019, RC031, RC032, RC033, RC036]   # RC019 confirmed clear; check others
-  fog:   []    # move fog RC folders here
-  rain:  []    # move rain RC folders here
+  clear: [RC019, RC031, RC032, RC033, RC036]   # all test RCs set to clear for now
+  fog:   []    # move fog RC folders here when weather data is available
+  rain:  []    # move rain RC folders here when weather data is available
 
 
 # ── Evaluation mode ───────────────────────────────────────────────────────────
