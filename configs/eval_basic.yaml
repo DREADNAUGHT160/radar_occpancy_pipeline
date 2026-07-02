@@ -43,6 +43,11 @@ normalization:
   mask_elevation: false
   power_threshold: -60.0
 
+eval_splits:
+  clear: [RC019, RC031, RC032, RC033, RC036]
+  fog:   []
+  rain:  []
+
 eval_mode: basic
 
 basic:
