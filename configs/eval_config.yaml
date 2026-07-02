@@ -81,7 +81,6 @@ eval_mode: weather   # change to 'basic' for quick check
 
 # ── Basic mode settings ───────────────────────────────────────────────────────
 basic:
-  dataset:   'RC019'   # single RC folder to check
   threshold: 0.4
 
 

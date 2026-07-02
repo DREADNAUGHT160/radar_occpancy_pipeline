@@ -117,86 +117,110 @@ def point_density_by_band(pts_in_box, box_volume, bands=((0, 10), (10, 15), (15,
 # -----------------------------------------------------------------------------
 
 def run_basic(config, ckpt, out_dir):
-    """Per-voxel IoU / Precision / Recall on a single clear-weather dataset."""
-    basic_cfg  = config.get('basic', {})
-    rc_name    = basic_cfg.get('dataset', '')
-    threshold  = float(basic_cfg.get('threshold', 0.4))
-    base_dir   = config.get('base_dir', '')
+    """Per-voxel IoU / Precision / Recall across all RC folders in eval_splits."""
+    basic_cfg = config.get('basic', {})
+    threshold = float(basic_cfg.get('threshold', 0.4))
+    base_dir  = config.get('base_dir', '')
 
-    if not rc_name:
-        print("ERROR: set basic.dataset in eval_config.yaml (e.g. RC_clear)")
+    # Collect all RC folders from eval_splits (all conditions)
+    splits   = config.get('eval_splits', {})
+    rc_names = [rc for folders in splits.values() for rc in folders]
+    if not rc_names:
+        print("ERROR: no RC folders found in eval_splits in eval_config.yaml")
         return
 
-    rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model  = _load_model(config, ckpt, device)
 
-    ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
-    print(f"\nBasic eval -- {rc_name}  ({len(ds)} frames)  threshold={threshold}")
-
-    tp_total = fp_total = fn_total = 0
-    per_frame = []
-
-    for idx in tqdm(range(len(ds)), desc="Evaluating"):
-        radar_tensor, label_tensor = ds[idx]
-
-        with torch.no_grad():
-            pred_prob = torch.sigmoid(
-                model(radar_tensor.unsqueeze(0).to(device))
-            )[0].cpu()
-
-        pred_bin  = (pred_prob  > threshold).float()
-        label_bin = (label_tensor > 0.5).float()
-
-        tp = (pred_bin * label_bin).sum().item()
-        fp = (pred_bin * (1 - label_bin)).sum().item()
-        fn = ((1 - pred_bin) * label_bin).sum().item()
-
-        tp_total += tp
-        fp_total += fp
-        fn_total += fn
-
-        iou   = tp / (tp + fp + fn + 1e-8)
-        prec  = tp / (tp + fp + 1e-8)
-        rec   = tp / (tp + fn + 1e-8)
-        per_frame.append({'frame': idx, 'IoU': iou, 'Precision': prec, 'Recall': rec})
-
-    iou_g  = tp_total / (tp_total + fp_total + fn_total + 1e-8)
-    prec_g = tp_total / (tp_total + fp_total + 1e-8)
-    rec_g  = tp_total / (tp_total + fn_total + 1e-8)
-
-    iou_m  = float(np.mean([f['IoU']       for f in per_frame]))
-    prec_m = float(np.mean([f['Precision'] for f in per_frame]))
-    rec_m  = float(np.mean([f['Recall']    for f in per_frame]))
-
-    print(f"\n{'-'*46}")
-    print(f"{'Metric':<18} {'Global':>10} {'Per-frame mean':>14}")
-    print(f"{'-'*46}")
-    print(f"{'IoU':<18} {iou_g:10.4f} {iou_m:14.4f}")
-    print(f"{'Precision':<18} {prec_g:10.4f} {prec_m:14.4f}")
-    print(f"{'Recall':<18} {rec_g:10.4f} {rec_m:14.4f}")
-    print(f"{'-'*46}")
-
-    # Verdict
-    if iou_g > 0.1:
-        print("\n  Model is producing meaningful predictions.")
-    elif iou_g > 0.01:
-        print("\n  Model is detecting something -- IoU is low, may need more training.")
-    else:
-        print("\n  WARNING: IoU near zero -- model may not be learning or threshold is wrong.")
-
     os.makedirs(out_dir, exist_ok=True)
     out_csv = os.path.join(out_dir, 'basic_results.csv')
+    rows    = []
+
+    for rc_name in rc_names:
+        rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
+        try:
+            ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
+        except Exception as e:
+            print(f"\n[SKIP] {rc_name}: {e}")
+            continue
+
+        print(f"\nBasic eval -- {rc_name}  ({len(ds)} frames)  threshold={threshold}")
+
+        tp_total = fp_total = fn_total = 0
+        per_frame = []
+
+        for idx in tqdm(range(len(ds)), desc=rc_name):
+            radar_tensor, label_tensor = ds[idx]
+            with torch.no_grad():
+                pred_prob = torch.sigmoid(
+                    model(radar_tensor.unsqueeze(0).to(device))
+                )[0].cpu()
+
+            pred_bin  = (pred_prob    > threshold).float()
+            label_bin = (label_tensor > 0.5).float()
+
+            tp = (pred_bin * label_bin).sum().item()
+            fp = (pred_bin * (1 - label_bin)).sum().item()
+            fn = ((1 - pred_bin) * label_bin).sum().item()
+            tp_total += tp; fp_total += fp; fn_total += fn
+
+            iou  = tp / (tp + fp + fn + 1e-8)
+            prec = tp / (tp + fp + 1e-8)
+            rec  = tp / (tp + fn + 1e-8)
+            per_frame.append({'frame': idx, 'IoU': iou, 'Precision': prec, 'Recall': rec})
+
+        iou_g  = tp_total / (tp_total + fp_total + fn_total + 1e-8)
+        prec_g = tp_total / (tp_total + fp_total + 1e-8)
+        rec_g  = tp_total / (tp_total + fn_total + 1e-8)
+        iou_m  = float(np.mean([f['IoU']       for f in per_frame]))
+        prec_m = float(np.mean([f['Precision'] for f in per_frame]))
+        rec_m  = float(np.mean([f['Recall']    for f in per_frame]))
+
+        print(f"\n{'-'*46}")
+        print(f"{'Metric':<18} {'Global':>10} {'Per-frame mean':>14}")
+        print(f"{'-'*46}")
+        print(f"{'IoU':<18} {iou_g:10.4f} {iou_m:14.4f}")
+        print(f"{'Precision':<18} {prec_g:10.4f} {prec_m:14.4f}")
+        print(f"{'Recall':<18} {rec_g:10.4f} {rec_m:14.4f}")
+        print(f"{'-'*46}")
+
+        rows.append({'RC': rc_name, 'IoU': iou_g, 'Precision': prec_g, 'Recall': rec_g,
+                     'per_frame': per_frame})
+
+    if not rows:
+        return
+
+    # Summary table
+    print(f"\n{'='*54}")
+    print(f"{'RC':<10} {'IoU':>8} {'Precision':>12} {'Recall':>10}")
+    print(f"{'-'*54}")
+    for r in rows:
+        print(f"{r['RC']:<10} {r['IoU']:8.4f} {r['Precision']:12.4f} {r['Recall']:10.4f}")
+    mean_iou  = float(np.mean([r['IoU']       for r in rows]))
+    mean_prec = float(np.mean([r['Precision'] for r in rows]))
+    mean_rec  = float(np.mean([r['Recall']    for r in rows]))
+    print(f"{'-'*54}")
+    print(f"{'MEAN':<10} {mean_iou:8.4f} {mean_prec:12.4f} {mean_rec:10.4f}")
+    print(f"{'='*54}")
+
+    if mean_iou > 0.1:
+        print("\n  Model is producing meaningful predictions.")
+    elif mean_iou > 0.01:
+        print("\n  Model is detecting something — IoU is low, may need more training.")
+    else:
+        print("\n  WARNING: IoU near zero — model may not be learning or threshold is wrong.")
+
     with open(out_csv, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Frame', 'IoU', 'Precision', 'Recall'])
-        for fd in per_frame:
-            writer.writerow([fd['frame'], f"{fd['IoU']:.4f}",
-                             f"{fd['Precision']:.4f}", f"{fd['Recall']:.4f}"])
-        writer.writerow([])
-        writer.writerow(['GLOBAL', f"{iou_g:.4f}", f"{prec_g:.4f}", f"{rec_g:.4f}"])
-        writer.writerow(['MEAN',   f"{iou_m:.4f}", f"{prec_m:.4f}", f"{rec_m:.4f}"])
-
+        for r in rows:
+            writer.writerow([r['RC'], 'Frame', 'IoU', 'Precision', 'Recall'])
+            for fd in r['per_frame']:
+                writer.writerow(['', fd['frame'], f"{fd['IoU']:.4f}",
+                                 f"{fd['Precision']:.4f}", f"{fd['Recall']:.4f}"])
+            writer.writerow(['', 'GLOBAL', f"{r['IoU']:.4f}",
+                             f"{r['Precision']:.4f}", f"{r['Recall']:.4f}"])
+            writer.writerow([])
+        writer.writerow(['MEAN', '', f"{mean_iou:.4f}", f"{mean_prec:.4f}", f"{mean_rec:.4f}"])
     print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
 
     # -- Thesis figures --------------------------------------------------------
@@ -205,11 +229,11 @@ def run_basic(config, ckpt, out_dir):
     thr_plot       = float(tp_cfg.get('threshold', threshold))
     n_plots        = int(tp_cfg.get('n_plots', 5))
     if tp_cfg.get('enable', True):
-        print(f"\n{'='*46}")
-        print(f"THESIS FIGURES  ({n_plots} frames, "
+        print(f"\n{'='*54}")
+        print(f"THESIS FIGURES  ({n_plots} frames per RC, "
               f"{'raw prediction' if raw_prediction else f'threshold={thr_plot}'})")
-        print(f"{'='*46}")
-        generate_thesis_plots([rc_name], base_dir, config, model, device,
+        print(f"{'='*54}")
+        generate_thesis_plots(rc_names, base_dir, config, model, device,
                               out_dir, threshold=thr_plot, n_plots=n_plots,
                               raw_prediction=raw_prediction)
 
