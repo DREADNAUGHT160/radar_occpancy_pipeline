@@ -428,6 +428,10 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             # while preserving the full shape of the PR curve above 5% confidence.
             pts_dl, scores_dl = occupancy_to_points(pred_np, threshold=0.05)
             pts_dl = pts_dl + r2l
+            if len(pts_dl) > 50_000:
+                top = np.argsort(scores_dl)[-50_000:]
+                pts_dl    = pts_dl[top]
+                scores_dl = scores_dl[top]
 
             lidar_pts_in_box = None
             if weather == 'clear':
