@@ -80,7 +80,7 @@ eval_mode: weather   # change to 'basic' for quick check
 
 # Set false to skip AP/P_d/P_fa/CD metrics and only generate camera projection
 # figures. Use this to avoid OOM when running camera projection on the full dataset.
-eval_metrics: true
+eval_metrics: false
 
 
 # ── Basic mode settings ───────────────────────────────────────────────────────
