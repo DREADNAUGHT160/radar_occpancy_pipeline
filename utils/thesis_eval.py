@@ -269,12 +269,21 @@ def _load_cfar(cfar_rc_dir, ts_ms, threshold_ms=200):
 def compute_ap(frames_data):
     all_scores, all_in_box = [], []
     for fd in frames_data:
-        pts, scores, corners = fd['pts'], fd['scores'], fd['box_corners']
-        if pts is None or len(pts) == 0 or corners is None:
+        corners = fd['box_corners']
+        if corners is None:
             continue
-        if scores is None:
-            scores = np.ones(len(pts))
-        in_box = points_in_box(pts, corners)
+        if 'in_box' in fd:
+            scores = fd['scores']
+            if scores is None or len(scores) == 0:
+                continue
+            in_box = fd['in_box']
+        else:
+            pts, scores = fd.get('pts'), fd.get('scores')
+            if pts is None or len(pts) == 0:
+                continue
+            if scores is None:
+                scores = np.ones(len(pts))
+            in_box = points_in_box(pts, corners)
         all_scores.extend(scores.tolist())
         all_in_box.extend(in_box.tolist())
 
@@ -300,18 +309,32 @@ def compute_ap(frames_data):
 def compute_pd_pfa(frames_data, threshold):
     n_frames = n_detected = total = outside = 0
     for fd in frames_data:
-        pts, scores, corners = fd['pts'], fd['scores'], fd['box_corners']
-        if pts is None or corners is None:
+        corners = fd['box_corners']
+        if corners is None:
             continue
         n_frames += 1
-        pts_t = pts[scores >= threshold] if scores is not None else pts
-        if len(pts_t) == 0:
-            continue
-        in_box = points_in_box(pts_t, corners)
-        total   += len(pts_t)
-        outside += int((~in_box).sum())
-        if in_box.any():
-            n_detected += 1
+        if 'in_box' in fd:
+            scores = fd['scores']
+            if scores is None or len(scores) == 0:
+                continue
+            mask     = scores >= threshold
+            total   += int(mask.sum())
+            in_box_t = fd['in_box'][mask]
+            outside += int((~in_box_t).sum())
+            if in_box_t.any():
+                n_detected += 1
+        else:
+            pts, scores = fd.get('pts'), fd.get('scores')
+            if pts is None:
+                continue
+            pts_t = pts[scores >= threshold] if scores is not None else pts
+            if len(pts_t) == 0:
+                continue
+            in_box = points_in_box(pts_t, corners)
+            total   += len(pts_t)
+            outside += int((~in_box).sum())
+            if in_box.any():
+                n_detected += 1
     p_d  = n_detected / n_frames if n_frames > 0 else 0.0
     p_fa = outside / total        if total    > 0 else 0.0
     return p_d, p_fa
@@ -325,13 +348,18 @@ def compute_weather_metrics(frames, threshold, weather):
     if weather == 'clear':
         cd_vals = []
         for fd in frames:
-            if (fd['pts'] is None or fd['box_corners'] is None
+            if (fd['box_corners'] is None
                     or fd['lidar_pts'] is None or len(fd['lidar_pts']) == 0):
                 continue
-            scores = fd['scores']
-            mask   = (scores >= threshold) if scores is not None else np.ones(len(fd['pts']), dtype=bool)
-            pts_in = fd['pts'][mask]
-            pts_in = pts_in[points_in_box(pts_in, fd['box_corners'])] if len(pts_in) else pts_in
+            if 'pts_in_box_thresh' in fd:
+                pts_in = fd['pts_in_box_thresh']
+            else:
+                pts, scores = fd.get('pts'), fd.get('scores')
+                if pts is None or len(pts) == 0:
+                    continue
+                mask   = (scores >= threshold) if scores is not None else np.ones(len(pts), dtype=bool)
+                pts_in = pts[mask]
+                pts_in = pts_in[points_in_box(pts_in, fd['box_corners'])] if len(pts_in) else pts_in
             if len(pts_in) == 0:
                 continue
             val = chamfer_distance(pts_in, fd['lidar_pts'])
@@ -343,14 +371,17 @@ def compute_weather_metrics(frames, threshold, weather):
     bands       = ((0, 5), (5, 10), (10, 15), (15, 20))
     density_acc = {f"{a}-{b}m": [] for a, b in bands}
     for fd in frames:
-        if fd['pts'] is None or fd['box_corners'] is None or np.isnan(fd.get('box_range', np.nan)):
+        if fd['box_corners'] is None or np.isnan(fd.get('box_range', np.nan)):
             continue
-        scores = fd['scores']
-        mask   = (scores >= threshold) if scores is not None else np.ones(len(fd['pts']), dtype=bool)
-        pts_t  = fd['pts'][mask]
-        if len(pts_t) == 0:
-            continue
-        pts_in = pts_t[points_in_box(pts_t, fd['box_corners'])]
+        if 'pts_in_box_thresh' in fd:
+            pts_in = fd['pts_in_box_thresh']
+        else:
+            pts, scores = fd.get('pts'), fd.get('scores')
+            if pts is None or len(pts) == 0:
+                continue
+            mask   = (scores >= threshold) if scores is not None else np.ones(len(pts), dtype=bool)
+            pts_t  = pts[mask]
+            pts_in = pts_t[points_in_box(pts_t, fd['box_corners'])] if len(pts_t) else pts_t
         if len(pts_in) == 0:
             continue
         # bin this frame into the band that matches its box range
@@ -423,15 +454,21 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                     model(radar_tensor.unsqueeze(0).to(device))
                 )[0].cpu().numpy()
 
-            # Use a small floor threshold to discard obvious background voxels;
-            # this bounds memory use in compute_ap (trapz over all sorted points)
-            # while preserving the full shape of the PR curve above 5% confidence.
             pts_dl, scores_dl = occupancy_to_points(pred_np, threshold=0.05)
             pts_dl = pts_dl + r2l
-            if len(pts_dl) > 50_000:
-                top = np.argsort(scores_dl)[-50_000:]
-                pts_dl    = pts_dl[top]
-                scores_dl = scores_dl[top]
+
+            # Precompute per-point in_box flags so metric functions never need
+            # to store 3D coordinates — reduces per-frame memory from 16N to 5N bytes.
+            # Also keep the small set of in-box pts at eval threshold for chamfer/density.
+            if corners is not None and len(pts_dl) > 0:
+                in_box_dl    = points_in_box(pts_dl, corners)
+                mask_thresh  = scores_dl >= threshold
+                pts_thresh   = pts_dl[mask_thresh]
+                ib_thresh    = points_in_box(pts_thresh, corners) if len(pts_thresh) else np.zeros(0, dtype=bool)
+                pts_in_thresh = pts_thresh[ib_thresh] if len(ib_thresh) else np.empty((0, 3), dtype=np.float32)
+            else:
+                in_box_dl     = np.zeros(len(pts_dl), dtype=bool)
+                pts_in_thresh = np.empty((0, 3), dtype=np.float32)
 
             lidar_pts_in_box = None
             if weather == 'clear':
@@ -441,9 +478,13 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                     lidar_pts_in_box = lbl_pts[points_in_box(lbl_pts, corners)]
 
             dl_frames.append({
-                'pts': pts_dl, 'scores': scores_dl,
-                'box_corners': corners, 'lidar_pts': lidar_pts_in_box,
-                'box_volume': box_volume, 'box_range': box_range,
+                'scores':            scores_dl,
+                'in_box':            in_box_dl,
+                'pts_in_box_thresh': pts_in_thresh,
+                'box_corners':       corners,
+                'lidar_pts':         lidar_pts_in_box,
+                'box_volume':        box_volume,
+                'box_range':         box_range,
             })
 
             if cfar_rc:
