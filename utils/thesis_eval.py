@@ -838,148 +838,147 @@ def run_weather(config, ckpt, out_dir):
         print("ERROR: set eval_splits in eval_config.yaml")
         return
 
+    eval_metrics = bool(config.get('eval_metrics', True))
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model  = _load_model(config, ckpt, device)
     print(f"\nWeather eval -- threshold={threshold}  device={device}")
+    if not eval_metrics:
+        print("  [INFO] eval_metrics: false — skipping AP/P_d/P_fa/CD computation")
 
     all_results = {}
 
-    for weather, rc_folders in weather_splits.items():
-        if not rc_folders:
-            continue
-        print(f"\n{'='*60}")
-        print(f"  {weather.upper()} -- {rc_folders}")
-        print('='*60)
-
-        dl_frames, cfar_frames = collect_frames(
-            rc_folders, base_dir, config, model, device,
-            threshold, weather)
-
-        print(f"  {len(dl_frames)} frames collected")
-        dl_m = compute_weather_metrics(dl_frames, threshold, weather)
-        all_results[weather] = {'DL': dl_m}
-
-        if cfar_frames and any(f['pts'] is not None for f in cfar_frames):
-            cfar_m = compute_weather_metrics(cfar_frames, 0.5, weather)
-            all_results[weather]['CFAR'] = cfar_m
-
-    # -- Results table ---------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("RESULTS TABLE")
-    print(f"{'='*60}")
-    print(f"{'Weather':<8} {'Method':<6} {'AP':>6} {'P_d':>6} {'P_fa':>6} {'CD':>9}")
-    print('-' * 48)
-
-    for weather in ['clear', 'fog', 'rain']:
-        if weather not in all_results:
-            continue
-        for method, m in all_results[weather].items():
-            cd_s = f"{m['CD']:9.4f}" if not np.isnan(m['CD']) else '      N/A'
-            print(f"{weather:<8} {method:<6} {m['AP']:6.3f} {m['P_d']:6.3f} {m['P_fa']:6.3f} {cd_s}")
-
-    # -- Degradation -----------------------------------------------------------
-    if 'clear' in all_results:
-        print(f"\n{'='*60}")
-        print("DEGRADATION  (clear -> weather)  lower % = more robust")
-        print(f"{'='*60}")
-        print(f"{'Weather':<8} {'Method':<6} {'AP deg%':>8} {'P_d deg%':>9} {'P_fa deg%':>10}")
-        print('-' * 45)
-
-        def _deg(c, w):
-            return f"{(c - w) / c * 100:8.1f}%" if c > 0 else '     N/A'
-
-        for weather in ['fog', 'rain']:
-            if weather not in all_results:
+    if eval_metrics:
+        for weather, rc_folders in weather_splits.items():
+            if not rc_folders:
                 continue
-            for method in ['DL', 'CFAR']:
-                if method not in all_results.get('clear', {}) or \
-                   method not in all_results.get(weather, {}):
-                    continue
-                c = all_results['clear'][weather]    if False else all_results['clear'][method]
-                w = all_results[weather][method]
-                print(f"{weather:<8} {method:<6} "
-                      f"{_deg(c['AP'], w['AP'])} "
-                      f"{_deg(c['P_d'], w['P_d'])} "
-                      f"{_deg(c['P_fa'], w['P_fa'])}")
+            print(f"\n{'='*60}")
+            print(f"  {weather.upper()} -- {rc_folders}")
+            print('='*60)
 
-    # -- Point density ---------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("POINT DENSITY  (pts/m^3 inside GT box)")
-    print(f"{'='*60}")
-    print(f"{'Weather':<8} {'Method':<6} {'0-5m':>8} {'5-10m':>8} {'10-15m':>8} {'15-20m':>8}")
-    print('-' * 50)
+            dl_frames, cfar_frames = collect_frames(
+                rc_folders, base_dir, config, model, device,
+                threshold, weather)
 
-    def _fd(v):
-        return f"{v:8.3f}" if not np.isnan(v) else '     N/A'
+            print(f"  {len(dl_frames)} frames collected")
+            dl_m = compute_weather_metrics(dl_frames, threshold, weather)
+            all_results[weather] = {'DL': dl_m}
 
-    for weather in ['clear', 'fog', 'rain']:
-        if weather not in all_results:
-            continue
-        for method, m in all_results[weather].items():
-            d = m['density']
-            print(f"{weather:<8} {method:<6} "
-                  f"{_fd(d.get('0-5m',   np.nan))} "
-                  f"{_fd(d.get('5-10m',  np.nan))} "
-                  f"{_fd(d.get('10-15m', np.nan))} "
-                  f"{_fd(d.get('15-20m', np.nan))}")
+            if cfar_frames and any(f['pts'] is not None for f in cfar_frames):
+                cfar_m = compute_weather_metrics(cfar_frames, 0.5, weather)
+                all_results[weather]['CFAR'] = cfar_m
 
-    # -- Range-band P_d / AP / P_fa -------------------------------------------
-    range_bands = ['0-5m', '5-10m', '10-15m', '15-20m']
-    has_range = any(
-        bool(all_results[w][meth].get('range_metrics'))
-        for w in all_results for meth in all_results[w]
-    )
-    if has_range:
+    if all_results:
+        # -- Results table -----------------------------------------------------
         print(f"\n{'='*60}")
-        print("RANGE-BAND DETECTION  (P_d / AP per distance band)")
+        print("RESULTS TABLE")
         print(f"{'='*60}")
-        print(f"{'Weather':<8} {'Method':<6} {'Band':<10} {'n':>5} {'AP':>6} {'P_d':>6} {'P_fa':>6}")
-        print('-' * 52)
+        print(f"{'Weather':<8} {'Method':<6} {'AP':>6} {'P_d':>6} {'P_fa':>6} {'CD':>9}")
+        print('-' * 48)
         for weather in ['clear', 'fog', 'rain']:
             if weather not in all_results:
                 continue
             for method, m in all_results[weather].items():
-                rm = m.get('range_metrics', {})
-                for band in range_bands:
-                    if band not in rm:
-                        continue
-                    bm = rm[band]
-                    print(f"{weather:<8} {method:<6} {band:<10} {bm['n']:>5} "
-                          f"{bm['AP']:6.3f} {bm['P_d']:6.3f} {bm['P_fa']:6.3f}")
+                cd_s = f"{m['CD']:9.4f}" if not np.isnan(m['CD']) else '      N/A'
+                print(f"{weather:<8} {method:<6} {m['AP']:6.3f} {m['P_d']:6.3f} {m['P_fa']:6.3f} {cd_s}")
 
-    # -- Save CSV --------------------------------------------------------------
-    os.makedirs(out_dir, exist_ok=True)
-    out_csv = os.path.join(out_dir, 'weather_results.csv')
-    with open(out_csv, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Weather', 'Method', 'AP', 'P_d', 'P_fa', 'Chamfer_Distance',
-                         'Density_0-5m', 'Density_5-10m', 'Density_10-15m', 'Density_15-20m'])
+        # -- Degradation -------------------------------------------------------
+        if 'clear' in all_results:
+            print(f"\n{'='*60}")
+            print("DEGRADATION  (clear -> weather)  lower % = more robust")
+            print(f"{'='*60}")
+            print(f"{'Weather':<8} {'Method':<6} {'AP deg%':>8} {'P_d deg%':>9} {'P_fa deg%':>10}")
+            print('-' * 45)
+            def _deg(c, w):
+                return f"{(c - w) / c * 100:8.1f}%" if c > 0 else '     N/A'
+            for weather in ['fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method in ['DL', 'CFAR']:
+                    if method not in all_results.get('clear', {}) or \
+                       method not in all_results.get(weather, {}):
+                        continue
+                    c = all_results['clear'][method]
+                    w = all_results[weather][method]
+                    print(f"{weather:<8} {method:<6} "
+                          f"{_deg(c['AP'], w['AP'])} "
+                          f"{_deg(c['P_d'], w['P_d'])} "
+                          f"{_deg(c['P_fa'], w['P_fa'])}")
+
+        # -- Point density -----------------------------------------------------
+        print(f"\n{'='*60}")
+        print("POINT DENSITY  (pts/m^3 inside GT box)")
+        print(f"{'='*60}")
+        print(f"{'Weather':<8} {'Method':<6} {'0-5m':>8} {'5-10m':>8} {'10-15m':>8} {'15-20m':>8}")
+        print('-' * 50)
+        def _fd(v):
+            return f"{v:8.3f}" if not np.isnan(v) else '     N/A'
         for weather in ['clear', 'fog', 'rain']:
             if weather not in all_results:
                 continue
             for method, m in all_results[weather].items():
                 d = m['density']
-                writer.writerow([
-                    weather, method,
-                    f"{m['AP']:.4f}", f"{m['P_d']:.4f}", f"{m['P_fa']:.4f}",
-                    f"{m['CD']:.4f}" if not np.isnan(m['CD']) else 'N/A',
-                    f"{d.get('0-5m',   np.nan):.4f}" if not np.isnan(d.get('0-5m',   np.nan)) else 'N/A',
-                    f"{d.get('5-10m',  np.nan):.4f}" if not np.isnan(d.get('5-10m',  np.nan)) else 'N/A',
-                    f"{d.get('10-15m', np.nan):.4f}" if not np.isnan(d.get('10-15m', np.nan)) else 'N/A',
-                    f"{d.get('15-20m', np.nan):.4f}" if not np.isnan(d.get('15-20m', np.nan)) else 'N/A',
-                ])
-        # Range-band rows
-        writer.writerow([])
-        writer.writerow(['Weather', 'Method', 'Band', 'n_frames', 'AP', 'P_d', 'P_fa'])
-        for weather in ['clear', 'fog', 'rain']:
-            if weather not in all_results:
-                continue
-            for method, m in all_results[weather].items():
-                for band, bm in m.get('range_metrics', {}).items():
-                    writer.writerow([weather, method, band, bm['n'],
-                                     f"{bm['AP']:.4f}", f"{bm['P_d']:.4f}", f"{bm['P_fa']:.4f}"])
+                print(f"{weather:<8} {method:<6} "
+                      f"{_fd(d.get('0-5m',   np.nan))} "
+                      f"{_fd(d.get('5-10m',  np.nan))} "
+                      f"{_fd(d.get('10-15m', np.nan))} "
+                      f"{_fd(d.get('15-20m', np.nan))}")
 
-    print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
+        # -- Range-band P_d / AP / P_fa ----------------------------------------
+        range_bands = ['0-5m', '5-10m', '10-15m', '15-20m']
+        has_range = any(
+            bool(all_results[w][meth].get('range_metrics'))
+            for w in all_results for meth in all_results[w]
+        )
+        if has_range:
+            print(f"\n{'='*60}")
+            print("RANGE-BAND DETECTION  (P_d / AP per distance band)")
+            print(f"{'='*60}")
+            print(f"{'Weather':<8} {'Method':<6} {'Band':<10} {'n':>5} {'AP':>6} {'P_d':>6} {'P_fa':>6}")
+            print('-' * 52)
+            for weather in ['clear', 'fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method, m in all_results[weather].items():
+                    rm = m.get('range_metrics', {})
+                    for band in range_bands:
+                        if band not in rm:
+                            continue
+                        bm = rm[band]
+                        print(f"{weather:<8} {method:<6} {band:<10} {bm['n']:>5} "
+                              f"{bm['AP']:6.3f} {bm['P_d']:6.3f} {bm['P_fa']:6.3f}")
+
+        # -- Save CSV ----------------------------------------------------------
+        os.makedirs(out_dir, exist_ok=True)
+        out_csv = os.path.join(out_dir, 'weather_results.csv')
+        with open(out_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Weather', 'Method', 'AP', 'P_d', 'P_fa', 'Chamfer_Distance',
+                             'Density_0-5m', 'Density_5-10m', 'Density_10-15m', 'Density_15-20m'])
+            for weather in ['clear', 'fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method, m in all_results[weather].items():
+                    d = m['density']
+                    writer.writerow([
+                        weather, method,
+                        f"{m['AP']:.4f}", f"{m['P_d']:.4f}", f"{m['P_fa']:.4f}",
+                        f"{m['CD']:.4f}" if not np.isnan(m['CD']) else 'N/A',
+                        f"{d.get('0-5m',   np.nan):.4f}" if not np.isnan(d.get('0-5m',   np.nan)) else 'N/A',
+                        f"{d.get('5-10m',  np.nan):.4f}" if not np.isnan(d.get('5-10m',  np.nan)) else 'N/A',
+                        f"{d.get('10-15m', np.nan):.4f}" if not np.isnan(d.get('10-15m', np.nan)) else 'N/A',
+                        f"{d.get('15-20m', np.nan):.4f}" if not np.isnan(d.get('15-20m', np.nan)) else 'N/A',
+                    ])
+            writer.writerow([])
+            writer.writerow(['Weather', 'Method', 'Band', 'n_frames', 'AP', 'P_d', 'P_fa'])
+            for weather in ['clear', 'fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method, m in all_results[weather].items():
+                    for band, bm in m.get('range_metrics', {}).items():
+                        writer.writerow([weather, method, band, bm['n'],
+                                         f"{bm['AP']:.4f}", f"{bm['P_d']:.4f}", f"{bm['P_fa']:.4f}"])
+        print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
 
     # -- Thesis figures --------------------------------------------------------
     tp_cfg         = config.get('thesis_plots', {})
