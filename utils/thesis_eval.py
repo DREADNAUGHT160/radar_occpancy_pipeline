@@ -422,7 +422,9 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
         try:
             ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
         except Exception as e:
-            print(f"  Skipping {rc_name}: {e}")
+            import traceback
+            print(f"  [ERROR] Skipping {rc_name}: {e}")
+            traceback.print_exc()
             continue
 
         txt_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
@@ -622,33 +624,33 @@ def _save_pred_plot(rc_name, ts_str, frame_idx,
 
 
 def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
-                      rc_name, ts_str, frame_idx, out_path, saveroad_dir=''):
-    if not saveroad_dir or not os.path.isdir(saveroad_dir):
+                      rc_name, ts_str, frame_idx, out_path,
+                      saveroad_dir='', project_points_mod=None):
+    """project_points_mod must be pre-loaded by the caller (validated once per run)."""
+    if project_points_mod is None:
         return
     try:
         import cv2
     except ImportError:
+        print("    [CAM] cv2 not installed — cannot save camera projection")
         return
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from utils.project_to_image import project_to_image
 
-    sys.path.insert(0, saveroad_dir)
-    try:
-        from tools import project_points_v2_withPC as project_points_mod
-    except ImportError:
-        return
-
     img_name, K, r_t, radar_to_lidar = parse_calibration(calib_txt)
     if not img_name:
+        print(f"    [CAM] frame {frame_idx}: PCO_frame missing in {os.path.basename(calib_txt)}")
         return
     img_path = os.path.join(pco_dir, img_name)
     if not os.path.exists(img_path):
+        print(f"    [CAM] frame {frame_idx}: camera image not found: {img_name}")
         return
 
     pts_3d, probs = occupancy_to_points(pred_np, threshold)
     if len(pts_3d) == 0:
+        print(f"    [CAM] frame {frame_idx}: 0 points above threshold {threshold:.3f}")
         return
     pts_3d = pts_3d + radar_to_lidar
     if len(pts_3d) > 150_000:
@@ -657,6 +659,7 @@ def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
 
     img = cv2.imread(img_path)
     if img is None:
+        print(f"    [CAM] frame {frame_idx}: cv2 could not read {img_path}")
         return
 
     img_rgb = cv2.cvtColor(
@@ -683,11 +686,31 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
     """Generate n_plots equally spaced prediction + camera frames per RC folder."""
     import matplotlib
     matplotlib.use('Agg')
+    import traceback
 
     sf              = config.get('subfolders', {})
     saveroad_dir    = config.get('saveroad_dir', '').strip()
     tp_cfg          = config.get('thesis_plots', {})
     do_camera       = bool(tp_cfg.get('camera_projection', True)) and bool(saveroad_dir)
+
+    # Validate saveroad_dir and load tools ONCE before the frame loop
+    project_points_mod = None
+    if do_camera:
+        if not os.path.isdir(saveroad_dir):
+            print(f"  [CAM ERROR] saveroad_dir not found: {saveroad_dir}")
+            print(f"              Camera projection disabled for this run.")
+            do_camera = False
+        else:
+            sys.path.insert(0, saveroad_dir)
+            try:
+                from tools import project_points_v2_withPC as _pm
+                project_points_mod = _pm
+                print(f"  Camera projection tools loaded OK from: {saveroad_dir}")
+            except ImportError as e:
+                print(f"  [CAM ERROR] Cannot import project_points_v2_withPC: {e}")
+                print(f"              Check that the .so suffix matches your Python version.")
+                print(f"              e.g. project_points_v2_withPC.cpython-310-x86_64-linux-gnu.so for Python 3.10")
+                do_camera = False
 
     for rc_name in rc_folders:
         rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
@@ -782,13 +805,18 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
                                 txt_files[best], pco_dir, pred_np,
                                 cam_threshold, rc_name, ts_str, idx,
                                 os.path.join(cam_dir, f'frame_{idx:03d}_{ts_str}.png'),
-                                saveroad_dir=saveroad_dir
+                                saveroad_dir=saveroad_dir,
+                                project_points_mod=project_points_mod,
                             )
                         except Exception as e:
-                            print(f"    [WARN] Camera frame {idx}: {e}")
+                            print(f"    [CAM ERROR] frame {idx}: {e}")
+                            traceback.print_exc()
+                    else:
+                        print(f"    [CAM] frame {idx}: no calib within 200ms (gap={diff[best]}ms)")
 
             except Exception as e:
                 print(f"    [WARN] Frame {idx} skipped: {e}")
+                traceback.print_exc()
 
         print(f"    Plots  -> {os.path.abspath(plot_dir)}  ({saved_plots}/{len(indices)} saved)")
         if do_camera and has_camera:

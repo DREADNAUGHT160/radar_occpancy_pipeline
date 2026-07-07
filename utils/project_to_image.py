@@ -113,13 +113,25 @@ def occupancy_to_points(pred_prob, threshold):
 
 
 def project_to_image(pts, probs, img, K, r_t, project_points):
-    """Project 3D points onto the camera image using the SAVEROAD reprojection tool."""
+    """Project 3D points onto the camera image using the SAVEROAD reprojection tool.
+
+    reprojection_opt filters points (z > 0.2, inside image bounds) but returns no
+    indices, so naively mapping colors[0:N_proj] picks wrong confidences.
+    Fix: use reprojection_data_loader which carries extra columns through the same
+    filters via pcd_ground — column 3 gives the correctly matched probabilities.
+    """
     if len(pts) == 0:
         return img
-    proj_pts, _, _, _ = project_points.reprojection_opt(pts, img, K, r_t)
+    # Append probs as column 3 so the filter indices inside reprojection_data_loader
+    # are applied to both xyz and confidence simultaneously.
+    pts_with_probs = np.column_stack([pts.astype(np.float64),
+                                      probs.astype(np.float64)])
+    proj_pts, _, pcd_ground = project_points.reprojection_data_loader(
+        pts_with_probs, img, K, r_t)
     if len(proj_pts) == 0:
         return img
-    colors     = (plt.cm.turbo(probs)[:, :3] * 255).astype(np.int32)
+    kept_probs = np.clip(pcd_ground[:, 3], 0.0, 1.0)
+    colors     = (plt.cm.turbo(kept_probs)[:, :3] * 255).astype(np.int32)
     colors     = np.fliplr(colors)   # RGB -> BGR for OpenCV
     img_drawn  = project_points.project_points(img.copy(), proj_pts, colors, size=3)
     return img_drawn
