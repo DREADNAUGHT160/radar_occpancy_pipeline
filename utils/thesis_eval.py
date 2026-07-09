@@ -71,18 +71,11 @@ def _load_model(config, ckpt, device):
     return model
 
 
-def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
-    """Return (box_corners, radar_to_lidar_t, R_radar_to_lidar) for nearest calib, or (None, zeros, eye)."""
-    if len(txt_ts) == 0:
-        return None, np.zeros(3), np.eye(3)
-    diffs = np.abs(txt_ts - ts_ms)
-    best  = int(np.argmin(diffs))
-    if diffs[best] > threshold_ms:
-        return None, np.zeros(3), np.eye(3)
-    txt_path = txt_files[best]
+def _parse_calib_file(txt_path):
+    """Parse one calib .txt → (corners, t_r2l, R_r2l). corners=None if no BoundingBox."""
     with open(txt_path) as f:
         content = f.read()
-    match = re.search(r'"BoundingBox":([\d\s.-]+),', content)
+    match   = re.search(r'"BoundingBox":([\d\s.-]+),', content)
     corners = np.array(match.group(1).split(), dtype=float).reshape(-1, 3) if match else None
     _, _, _, r2l = parse_calibration(txt_path)
     R_r2l = np.eye(3)
@@ -92,6 +85,17 @@ def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
         if len(vals) == 9:
             R_r2l = vals.reshape(3, 3)
     return corners, r2l, R_r2l
+
+
+def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
+    """Return (corners, t_r2l, R_r2l) for nearest calib within threshold, else (None, zeros, eye)."""
+    if len(txt_ts) == 0:
+        return None, np.zeros(3), np.eye(3)
+    diffs = np.abs(txt_ts - ts_ms)
+    best  = int(np.argmin(diffs))
+    if diffs[best] > threshold_ms:
+        return None, np.zeros(3), np.eye(3)
+    return _parse_calib_file(txt_files[best])
 
 
 def _cfar_to_lidar(pts, R_r2l, t_r2l):
@@ -433,7 +437,74 @@ def compute_weather_metrics(frames, threshold, weather):
             'density': density, 'range_metrics': range_metrics}
 
 
+def _box_stats(corners):
+    """Return (box_volume, box_range) from corner array."""
+    dims   = corners.max(axis=0) - corners.min(axis=0)
+    center = (corners.max(axis=0) + corners.min(axis=0)) / 2
+    return float(dims[0] * dims[1] * dims[2]), float(np.sqrt(center[0]**2 + center[1]**2))
+
+
+def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
+    """Collect CFAR frames independently from all calib files (not tied to DL timestamps).
+
+    Each calib file defines one evaluation frame. CFAR files are matched by
+    nearest timestamp within 200 ms. Label files (for Chamfer) are matched
+    within 100 ms when weather == 'clear'.
+    """
+    cfar_dir   = os.path.join(rc_dir, sf.get('cfar', 'cfar'))
+    label_dir  = os.path.join(rc_dir, sf.get('labels', 'labels'))
+
+    has_cfar = os.path.isdir(cfar_dir) and (
+        glob.glob(os.path.join(cfar_dir, '*.npy')) +
+        glob.glob(os.path.join(cfar_dir, '*.txt')))
+    if not has_cfar:
+        return []
+
+    label_files = sorted(glob.glob(os.path.join(label_dir, '*.npy')))
+    label_ts    = np.array([_extract_ts_ms(f) for f in label_files]) if label_files else np.array([])
+
+    frames = []
+    for cf in calib_files:
+        ts_ms = _extract_ts_ms(cf)
+        corners, r2l, R_r2l = _parse_calib_file(cf)
+        if corners is None:
+            continue
+        box_volume, box_range = _box_stats(corners)
+
+        # GT LiDAR pts for Chamfer distance (clear weather only)
+        lidar_pts_in_box = None
+        if weather == 'clear' and len(label_ts) > 0:
+            diffs = np.abs(label_ts - ts_ms)
+            best  = int(np.argmin(diffs))
+            if diffs[best] <= 100:
+                lbl_pts, _ = occupancy_to_points(np.load(label_files[best]), threshold=0.5)
+                lbl_pts    = lbl_pts + r2l
+                if len(lbl_pts) > 0:
+                    lidar_pts_in_box = lbl_pts[points_in_box(lbl_pts, corners)]
+
+        # Load CFAR: Doppler-filtered, binary scores, full coordinate transform
+        pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+        if pts_c is not None and len(pts_c):
+            pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
+
+        frames.append({
+            'pts':         pts_c,
+            'scores':      scores_c,
+            'box_corners': corners,
+            'lidar_pts':   lidar_pts_in_box,
+            'box_volume':  box_volume,
+            'box_range':   box_range,
+        })
+    return frames
+
+
 def collect_frames(rc_folders, base_dir, config, model, device, threshold, weather):
+    """Return (dl_frames, cfar_frames) for all RC folders.
+
+    DL frames: one per prepared-dataset frame (matched by dataset timestamps).
+    CFAR frames: one per calib file (independent timestamps — covers all range
+    bands including frames without matching prepared-dataset entries).
+    """
     sf         = config.get('subfolders', {})
     dl_frames  = []
     cfar_frames = []
@@ -442,37 +513,28 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
         rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
         calib_dir = os.path.join(rc_dir, sf.get('calib', 'calib'))
 
+        calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
+        txt_ts      = np.array([_extract_ts_ms(f) for f in calib_files]) if calib_files else np.array([])
+
+        # ── CFAR frames: independent loop over all calib files ────────────────
+        cfar_frames.extend(_collect_cfar_frames(rc_dir, sf, weather, calib_files))
+
+        # ── DL frames: one per prepared-dataset frame ─────────────────────────
         try:
             ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
         except Exception as e:
             import traceback
-            print(f"  [ERROR] Skipping {rc_name}: {e}")
+            print(f"  [ERROR] Skipping {rc_name} DL: {e}")
             traceback.print_exc()
             continue
-
-        txt_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
-        txt_ts    = np.array([_extract_ts_ms(f) for f in txt_files]) if txt_files else np.array([])
-
-        # CFAR lives at base_dir/<rc_name>/<subfolders.cfar>/ (set in eval_config.yaml)
-        cfar_rc = os.path.join(rc_dir, sf.get('cfar', 'cfar'))
-        if not os.path.isdir(cfar_rc) or not (
-                glob.glob(os.path.join(cfar_rc, '*.npy')) +
-                glob.glob(os.path.join(cfar_rc, '*.txt'))):
-            cfar_rc = ''
 
         for idx in tqdm(range(len(ds)), desc=rc_name):
             radar_tensor, label_tensor = ds[idx]
             sample = ds.matched_data[idx]
             ts_ms  = _extract_ts_ms(sample['power'])
 
-            corners, r2l, R_r2l = _find_calib(txt_files, txt_ts, ts_ms)
-            box_volume   = 0.0
-            box_range    = np.nan
-            if corners is not None:
-                dims       = corners.max(axis=0) - corners.min(axis=0)
-                box_volume = float(dims[0] * dims[1] * dims[2])
-                center     = (corners.max(axis=0) + corners.min(axis=0)) / 2
-                box_range  = float(np.sqrt(center[0]**2 + center[1]**2))
+            corners, r2l, R_r2l = _find_calib(calib_files, txt_ts, ts_ms)
+            box_volume, box_range = _box_stats(corners) if corners is not None else (0.0, np.nan)
 
             with torch.no_grad():
                 pred_np = torch.sigmoid(
@@ -482,14 +544,12 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             pts_dl, scores_dl = occupancy_to_points(pred_np, threshold=0.05)
             pts_dl = pts_dl + r2l
 
-            # Precompute per-point in_box flags so metric functions never need
-            # to store 3D coordinates — reduces per-frame memory from 16N to 5N bytes.
-            # Also keep the small set of in-box pts at eval threshold for chamfer/density.
+            # Precompute per-point in_box flags — avoids storing raw point clouds
             if corners is not None and len(pts_dl) > 0:
-                in_box_dl    = points_in_box(pts_dl, corners)
-                mask_thresh  = scores_dl >= threshold
-                pts_thresh   = pts_dl[mask_thresh]
-                ib_thresh    = points_in_box(pts_thresh, corners) if len(pts_thresh) else np.zeros(0, dtype=bool)
+                in_box_dl     = points_in_box(pts_dl, corners)
+                mask_thresh   = scores_dl >= threshold
+                pts_thresh    = pts_dl[mask_thresh]
+                ib_thresh     = points_in_box(pts_thresh, corners) if len(pts_thresh) else np.zeros(0, dtype=bool)
                 pts_in_thresh = pts_thresh[ib_thresh] if len(ib_thresh) else np.empty((0, 3), dtype=np.float32)
             else:
                 in_box_dl     = np.zeros(len(pts_dl), dtype=bool)
@@ -511,17 +571,6 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                 'box_volume':        box_volume,
                 'box_range':         box_range,
             })
-
-            if cfar_rc:
-                pts_c, scores_c = _load_cfar(cfar_rc, ts_ms)
-                # Full SAVEROAD → LiDAR transform: flip X then apply inverse rotation+translation.
-                if pts_c is not None and len(pts_c):
-                    pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
-                cfar_frames.append({
-                    'pts': pts_c, 'scores': scores_c,
-                    'box_corners': corners, 'lidar_pts': lidar_pts_in_box,
-                    'box_volume': box_volume, 'box_range': box_range,
-                })
 
     return dl_frames, cfar_frames
 
