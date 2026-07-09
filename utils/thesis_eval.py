@@ -72,20 +72,37 @@ def _load_model(config, ckpt, device):
 
 
 def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
-    """Return (box_corners, radar_to_lidar) for the nearest calib file, or (None, zeros)."""
+    """Return (box_corners, radar_to_lidar_t, R_radar_to_lidar) for nearest calib, or (None, zeros, eye)."""
     if len(txt_ts) == 0:
-        return None, np.zeros(3)
+        return None, np.zeros(3), np.eye(3)
     diffs = np.abs(txt_ts - ts_ms)
     best  = int(np.argmin(diffs))
     if diffs[best] > threshold_ms:
-        return None, np.zeros(3)
+        return None, np.zeros(3), np.eye(3)
     txt_path = txt_files[best]
     with open(txt_path) as f:
         content = f.read()
     match = re.search(r'"BoundingBox":([\d\s.-]+),', content)
     corners = np.array(match.group(1).split(), dtype=float).reshape(-1, 3) if match else None
     _, _, _, r2l = parse_calibration(txt_path)
-    return corners, r2l
+    R_r2l = np.eye(3)
+    m = re.search(r'"Rotation_Radar_to_Lidar":\s*([-\d\s.e+]+),', content)
+    if m:
+        vals = np.array(m.group(1).strip().split(), dtype=float)
+        if len(vals) == 9:
+            R_r2l = vals.reshape(3, 3)
+    return corners, r2l, R_r2l
+
+
+def _cfar_to_lidar(pts, R_r2l, t_r2l):
+    """Transform raw SAVEROAD CFAR points to LiDAR frame.
+    Matches cfar_all_frames.py: flip X then apply inverse of Radar_to_Lidar."""
+    p = pts.copy().astype(np.float64)
+    p[:, 0] *= -1
+    T   = np.vstack([np.hstack([R_r2l.T, (-R_r2l.T @ t_r2l).reshape(-1, 1)]),
+                     [0, 0, 0, 1]])
+    hom = np.hstack([p, np.ones((len(p), 1))])
+    return (T @ hom.T).T[:, :3].astype(np.float32)
 
 
 # -- Geometry ------------------------------------------------------------------
@@ -261,8 +278,14 @@ def _load_cfar(cfar_rc_dir, ts_ms, threshold_ms=200):
         data = data.reshape(1, -1)
     if len(data) == 0:
         return None, None
+    # Apply Doppler filter: column 3 is velocity (m/s); keep approaching targets only.
+    # Using it as a score with threshold=0.5 would discard all negative-velocity detections.
+    if data.shape[1] > 3:
+        data = data[data[:, 3] < -1.8]
+    if len(data) == 0:
+        return None, None
     pts    = data[:, :3].astype(np.float32)
-    scores = data[:, 3].astype(np.float32) if data.shape[1] > 3 else None
+    scores = np.ones(len(pts), dtype=np.float32)   # binary: passed Doppler gate
     return pts, scores
 
 
@@ -442,7 +465,7 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             sample = ds.matched_data[idx]
             ts_ms  = _extract_ts_ms(sample['power'])
 
-            corners, r2l = _find_calib(txt_files, txt_ts, ts_ms)
+            corners, r2l, R_r2l = _find_calib(txt_files, txt_ts, ts_ms)
             box_volume   = 0.0
             box_range    = np.nan
             if corners is not None:
@@ -491,12 +514,9 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
 
             if cfar_rc:
                 pts_c, scores_c = _load_cfar(cfar_rc, ts_ms)
-                # Radar .txt files use opposite Y axis vs LiDAR frame (right-hand vs
-                # left-hand convention in the SAVEROAD export). Negate Y to align with
-                # the LiDAR-frame bounding boxes used for point-in-box evaluation.
+                # Full SAVEROAD → LiDAR transform: flip X then apply inverse rotation+translation.
                 if pts_c is not None and len(pts_c):
-                    pts_c = pts_c.copy()
-                    pts_c[:, 1] = -pts_c[:, 1]
+                    pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
                 cfar_frames.append({
                     'pts': pts_c, 'scores': scores_c,
                     'box_corners': corners, 'lidar_pts': lidar_pts_in_box,
