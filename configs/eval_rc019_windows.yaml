@@ -49,5 +49,8 @@ weather:
 
 thesis_plots:
   enable:            false
+  n_plots:           5
+  threshold:         0.4
+  camera_projection: true
 
 out_dir: verification_output/eval_rc019_windows

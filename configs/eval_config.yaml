@@ -99,7 +99,10 @@ thesis_plots:
   n_plots:           5       # frames per RC folder (equally spaced)
   raw_prediction:    true    # true -> raw probability output; false -> apply threshold
   threshold:         0.4     # used only when raw_prediction: false
-  camera_projection: false   # set true and fill in saveroad_dir above to enable
+  # Set camera_projection: true to generate 2-panel DL-vs-CFAR camera overlay figures.
+  # Requires pco/ and calib/ subfolders in each RC folder (standard prepared dataset layout).
+  # Output: <out_dir>/camera_projection/<rc_name>/frame_NN_rangeX.Xm.png
+  camera_projection: false
 
 
 # ── Output ────────────────────────────────────────────────────────────────────

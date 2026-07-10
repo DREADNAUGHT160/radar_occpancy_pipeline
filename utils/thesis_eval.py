@@ -750,6 +750,206 @@ def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
     plt.close(fig)
 
 
+# ── Camera projection helpers ─────────────────────────────────────────────────
+
+def _parse_calib_full(txt_path):
+    """Return (img_name, K, r_t, corners, t_r2l, R_r2l) from a calib .txt."""
+    img_name, K, r_t, t_r2l = parse_calibration(txt_path)
+    with open(txt_path) as f:
+        content = f.read()
+    m_bb  = re.search(r'"BoundingBox":([\d\s.-]+),', content)
+    corners = np.array(m_bb.group(1).split(), dtype=float).reshape(-1, 3) if m_bb else None
+    R_r2l = np.eye(3)
+    m_rot = re.search(r'"Rotation_Radar_to_Lidar":\s*([-\d\s.e+]+),', content)
+    if m_rot:
+        vals = np.array(m_rot.group(1).strip().split(), dtype=float)
+        if len(vals) == 9:
+            R_r2l = vals.reshape(3, 3)
+    return img_name, K, r_t, corners, t_r2l, R_r2l
+
+
+def _axangle2mat(axis, angle):
+    c, s = np.cos(angle), np.sin(angle); t = 1 - c
+    x, y, z = axis
+    return np.array([[t*x*x+c,   t*x*y-s*z, t*x*z+s*y],
+                     [t*x*y+s*z, t*y*y+c,   t*y*z-s*x],
+                     [t*x*z-s*y, t*y*z+s*x, t*z*z+c  ]])
+
+
+def _project_pts_cam(pts, K, r_t):
+    if len(pts) == 0:
+        return np.empty((0, 2), dtype=np.int32), np.zeros(0, dtype=bool)
+    rot  = (_axangle2mat([0,0,1], r_t[2])
+            @ _axangle2mat([0,1,0], r_t[1])
+            @ _axangle2mat([1,0,0], r_t[0]))
+    cam   = (rot @ pts.T).T + r_t[3:]
+    front = cam[:, 2] > 0.2
+    proj  = (K @ cam[front].T).T
+    proj  = proj / proj[:, 2:3]
+    return proj[:, :2].astype(np.int32), front
+
+
+def _in_image(px, h, w):
+    return (px[:, 0] >= 0) & (px[:, 0] < w) & (px[:, 1] >= 0) & (px[:, 1] < h)
+
+
+def _draw_bbox_cam(img, corners, K, r_t, color=(0, 0, 220), thickness=2):
+    rot  = (_axangle2mat([0,0,1], r_t[2])
+            @ _axangle2mat([0,1,0], r_t[1])
+            @ _axangle2mat([1,0,0], r_t[0]))
+    pts3d = corners[[0, 1, 2, 3, 5, 6, 7, 8]]
+    cam   = (rot @ pts3d.T).T + r_t[3:]
+    if np.all(cam[:, 2] <= 0):
+        return img
+    proj  = (K @ cam.T).T
+    proj  = proj / proj[:, 2:3]
+    px    = proj[:, :2].astype(int)
+    def _line(i, j):
+        if cam[i, 2] > 0 and cam[j, 2] > 0:
+            cv2.line(img, tuple(px[i]), tuple(px[j]), color, thickness)
+    for a, b in [(0,1),(1,2),(2,3),(3,0)]: _line(a, b)
+    for a, b in [(4,5),(5,6),(6,7),(7,4)]: _line(a, b)
+    for a, b in [(0,4),(1,5),(2,6),(3,7)]: _line(a, b)
+    return img
+
+
+def generate_camera_projection_plots(rc_folders, base_dir, config, model, device,
+                                      threshold, out_dir, n_plots=5):
+    """Generate n_plots 2-panel camera projection figures per RC folder.
+
+    Each panel shows the camera image with GT bounding box (red):
+      Left  — DL model occupancy (green)
+      Right — CFAR Doppler-filtered detections (orange)
+
+    Frames are chosen equally spaced across all calib files so the full
+    range band is represented, not just the prepared-dataset timestamps.
+    """
+    import cv2
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    sf         = config.get('subfolders', {})
+    DL_COLOR   = (20,  255,  57)   # neon green  (BGR)
+    CFAR_COLOR = (0,   140, 255)   # orange      (BGR)
+    BOX_COLOR  = (0,   0,   220)   # red         (BGR)
+
+    for rc_name in rc_folders:
+        rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
+        calib_dir = os.path.join(rc_dir, sf.get('calib', 'calib'))
+        cfar_dir  = os.path.join(rc_dir, sf.get('cfar',  'cfar'))
+        pco_dir   = os.path.join(rc_dir, sf.get('pco',   'pco'))
+
+        calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
+        if not calib_files:
+            print(f'  [SKIP] {rc_name}: no calib files')
+            continue
+
+        try:
+            ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
+            power_ts = np.array([_extract_ts_ms(ds.matched_data[i]['power'])
+                                  for i in range(len(ds))])
+        except Exception as e:
+            print(f'  [SKIP] {rc_name} dataset: {e}')
+            continue
+
+        has_cfar = os.path.isdir(cfar_dir) and (
+            glob.glob(os.path.join(cfar_dir, '*.npy')) +
+            glob.glob(os.path.join(cfar_dir, '*.txt')))
+
+        # Equally spaced across all calib files (not just prepared dataset)
+        idxs     = np.linspace(0, len(calib_files) - 1, n_plots, dtype=int)
+        selected = [calib_files[i] for i in idxs]
+
+        rc_out = os.path.join(out_dir, 'camera_projection', rc_name)
+        os.makedirs(rc_out, exist_ok=True)
+
+        for fi, cf in enumerate(selected):
+            ts_ms = _extract_ts_ms(cf)
+            try:
+                img_name, K, r_t, corners, t_r2l, R_r2l = _parse_calib_full(cf)
+            except Exception:
+                continue
+            if corners is None:
+                continue
+
+            center    = (corners.max(0) + corners.min(0)) / 2
+            box_range = float(np.sqrt(center[0]**2 + center[1]**2))
+
+            img_path = os.path.join(pco_dir, img_name)
+            if not os.path.exists(img_path):
+                continue
+            img_bgr = cv2.imread(img_path)
+            if img_bgr is None:
+                continue
+            h, w = img_bgr.shape[:2]
+
+            # DL panel
+            img_dl = img_bgr.copy()
+            n_dl   = 0
+            di = int(np.argmin(np.abs(power_ts - ts_ms)))
+            if abs(power_ts[di] - ts_ms) <= 100:
+                radar_tensor, _ = ds[di]
+                with torch.no_grad():
+                    pred_np = torch.sigmoid(
+                        model(radar_tensor.unsqueeze(0).to(device))
+                    )[0].cpu().numpy()
+                pts_dl, _ = occupancy_to_points(pred_np, threshold)
+                if len(pts_dl) > 0:
+                    pts_dl_l = (pts_dl + t_r2l).astype(np.float64)
+                    px_d, front_d = _project_pts_cam(pts_dl_l, K, r_t)
+                    valid = _in_image(px_d, h, w)
+                    for (x, y) in px_d[valid]:
+                        cv2.circle(img_dl, (int(x), int(y)), 4, DL_COLOR, -1)
+                    n_dl = int(valid.sum())
+            _draw_bbox_cam(img_dl, corners, K, r_t, BOX_COLOR, thickness=2)
+
+            # CFAR panel
+            img_cfar = img_bgr.copy()
+            n_cfar   = 0
+            if has_cfar:
+                pts_c, _ = _load_cfar(cfar_dir, ts_ms)
+                if pts_c is not None and len(pts_c):
+                    pts_c = _cfar_to_lidar(pts_c, R_r2l, t_r2l)
+                    px_c, _ = _project_pts_cam(pts_c.astype(np.float64), K, r_t)
+                    valid = _in_image(px_c, h, w)
+                    for (x, y) in px_c[valid]:
+                        cv2.circle(img_cfar, (int(x), int(y)), 5, CFAR_COLOR, -1)
+                    n_cfar = int(valid.sum())
+            _draw_bbox_cam(img_cfar, corners, K, r_t, BOX_COLOR, thickness=2)
+
+            # 2-panel figure
+            fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+            for ax, im, title in zip(
+                    axes,
+                    [img_dl,   img_cfar],
+                    [f'DL Model ({n_dl} pts)',
+                     f'CFAR Doppler-filtered ({n_cfar} pts)']):
+                ax.imshow(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
+                ax.set_title(title, fontsize=12)
+                ax.axis('off')
+
+            fig.legend(
+                handles=[
+                    mpatches.Patch(facecolor='#DC0000', edgecolor='white', label='GT Bounding Box'),
+                    mpatches.Patch(facecolor='#39FF14', edgecolor='white', label='DL Occupancy'),
+                    mpatches.Patch(facecolor='#FF8C00', edgecolor='white', label='CFAR Detection'),
+                ],
+                loc='lower center', ncol=3, fontsize=10,
+                framealpha=0.85, bbox_to_anchor=(0.5, -0.01))
+            fig.suptitle(f'{rc_name}  |  range = {box_range:.1f} m', fontsize=13, y=1.01)
+            plt.tight_layout()
+
+            out_path = os.path.join(rc_out, f'frame_{fi+1:02d}_range{box_range:.1f}m.png')
+            plt.savefig(out_path, dpi=120, bbox_inches='tight')
+            plt.close(fig)
+            print(f'    frame {fi+1}/{n_plots}  range={box_range:.1f}m  '
+                  f'DL={n_dl}  CFAR={n_cfar}  -> {os.path.basename(out_path)}')
+
+        print(f'  {rc_name}: {n_plots} frames saved -> {rc_out}')
+
+
 def generate_thesis_plots(rc_folders, base_dir, config, model, device,
                           out_dir, threshold=0.4, n_plots=5, raw_prediction=True):
     """Generate n_plots equally spaced prediction + camera frames per RC folder."""
@@ -1054,12 +1254,13 @@ def run_weather(config, ckpt, out_dir):
     n_plots        = int(tp_cfg.get('n_plots', 5))
     raw_prediction = bool(tp_cfg.get('raw_prediction', True))
     thr_plot       = float(tp_cfg.get('threshold', threshold))
+    all_rc = list(dict.fromkeys(
+        rc for folders in weather_splits.values() for rc in folders
+    ))
+
     if tp_cfg.get('enable', True):
         device_p = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_p  = _load_model(config, ckpt, device_p)
-        all_rc   = list(dict.fromkeys(
-            rc for folders in weather_splits.values() for rc in folders
-        ))
         print(f"\n{'='*60}")
         print(f"THESIS FIGURES  ({n_plots} frames per RC folder, "
               f"{'raw prediction' if raw_prediction else f'threshold={thr_plot}'})")
@@ -1067,6 +1268,16 @@ def run_weather(config, ckpt, out_dir):
         generate_thesis_plots(all_rc, base_dir, config, model_p, device_p,
                               out_dir, threshold=thr_plot, n_plots=n_plots,
                               raw_prediction=raw_prediction)
+
+    if tp_cfg.get('camera_projection', False):
+        device_p = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model_p  = _load_model(config, ckpt, device_p)
+        print(f"\n{'='*60}")
+        print(f"CAMERA PROJECTION  ({n_plots} frames per RC folder, DL vs CFAR)")
+        print(f"{'='*60}")
+        generate_camera_projection_plots(
+            all_rc, base_dir, config, model_p, device_p,
+            threshold, out_dir, n_plots=n_plots)
 
 
 # -----------------------------------------------------------------------------
