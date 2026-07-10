@@ -71,21 +71,42 @@ def _load_model(config, ckpt, device):
     return model
 
 
+def _parse_calib_file(txt_path):
+    """Parse one calib .txt → (corners, t_r2l, R_r2l). corners=None if no BoundingBox."""
+    with open(txt_path) as f:
+        content = f.read()
+    match   = re.search(r'"BoundingBox":([\d\s.-]+),', content)
+    corners = np.array(match.group(1).split(), dtype=float).reshape(-1, 3) if match else None
+    _, _, _, r2l = parse_calibration(txt_path)
+    R_r2l = np.eye(3)
+    m = re.search(r'"Rotation_Radar_to_Lidar":\s*([-\d\s.e+]+),', content)
+    if m:
+        vals = np.array(m.group(1).strip().split(), dtype=float)
+        if len(vals) == 9:
+            R_r2l = vals.reshape(3, 3)
+    return corners, r2l, R_r2l
+
+
 def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
-    """Return (box_corners, radar_to_lidar) for the nearest calib file, or (None, zeros)."""
+    """Return (corners, t_r2l, R_r2l) for nearest calib within threshold, else (None, zeros, eye)."""
     if len(txt_ts) == 0:
-        return None, np.zeros(3)
+        return None, np.zeros(3), np.eye(3)
     diffs = np.abs(txt_ts - ts_ms)
     best  = int(np.argmin(diffs))
     if diffs[best] > threshold_ms:
-        return None, np.zeros(3)
-    txt_path = txt_files[best]
-    with open(txt_path) as f:
-        content = f.read()
-    match = re.search(r'"BoundingBox":([\d\s.-]+),', content)
-    corners = np.array(match.group(1).split(), dtype=float).reshape(-1, 3) if match else None
-    _, _, _, r2l = parse_calibration(txt_path)
-    return corners, r2l
+        return None, np.zeros(3), np.eye(3)
+    return _parse_calib_file(txt_files[best])
+
+
+def _cfar_to_lidar(pts, R_r2l, t_r2l):
+    """Transform raw SAVEROAD CFAR points to LiDAR frame.
+    Matches cfar_all_frames.py: flip X then apply inverse of Radar_to_Lidar."""
+    p = pts.copy().astype(np.float64)
+    p[:, 0] *= -1
+    T   = np.vstack([np.hstack([R_r2l.T, (-R_r2l.T @ t_r2l).reshape(-1, 1)]),
+                     [0, 0, 0, 1]])
+    hom = np.hstack([p, np.ones((len(p), 1))])
+    return (T @ hom.T).T[:, :3].astype(np.float32)
 
 
 # -- Geometry ------------------------------------------------------------------
@@ -261,20 +282,35 @@ def _load_cfar(cfar_rc_dir, ts_ms, threshold_ms=200):
         data = data.reshape(1, -1)
     if len(data) == 0:
         return None, None
+    # Apply Doppler filter: column 3 is velocity (m/s); keep approaching targets only.
+    # Using it as a score with threshold=0.5 would discard all negative-velocity detections.
+    if data.shape[1] > 3:
+        data = data[data[:, 3] < -1.8]
+    if len(data) == 0:
+        return None, None
     pts    = data[:, :3].astype(np.float32)
-    scores = data[:, 3].astype(np.float32) if data.shape[1] > 3 else None
+    scores = np.ones(len(pts), dtype=np.float32)   # binary: passed Doppler gate
     return pts, scores
 
 
 def compute_ap(frames_data):
     all_scores, all_in_box = [], []
     for fd in frames_data:
-        pts, scores, corners = fd['pts'], fd['scores'], fd['box_corners']
-        if pts is None or len(pts) == 0 or corners is None:
+        corners = fd['box_corners']
+        if corners is None:
             continue
-        if scores is None:
-            scores = np.ones(len(pts))
-        in_box = points_in_box(pts, corners)
+        if 'in_box' in fd:
+            scores = fd['scores']
+            if scores is None or len(scores) == 0:
+                continue
+            in_box = fd['in_box']
+        else:
+            pts, scores = fd.get('pts'), fd.get('scores')
+            if pts is None or len(pts) == 0:
+                continue
+            if scores is None:
+                scores = np.ones(len(pts))
+            in_box = points_in_box(pts, corners)
         all_scores.extend(scores.tolist())
         all_in_box.extend(in_box.tolist())
 
@@ -300,18 +336,32 @@ def compute_ap(frames_data):
 def compute_pd_pfa(frames_data, threshold):
     n_frames = n_detected = total = outside = 0
     for fd in frames_data:
-        pts, scores, corners = fd['pts'], fd['scores'], fd['box_corners']
-        if pts is None or corners is None:
+        corners = fd['box_corners']
+        if corners is None:
             continue
         n_frames += 1
-        pts_t = pts[scores >= threshold] if scores is not None else pts
-        if len(pts_t) == 0:
-            continue
-        in_box = points_in_box(pts_t, corners)
-        total   += len(pts_t)
-        outside += int((~in_box).sum())
-        if in_box.any():
-            n_detected += 1
+        if 'in_box' in fd:
+            scores = fd['scores']
+            if scores is None or len(scores) == 0:
+                continue
+            mask     = scores >= threshold
+            total   += int(mask.sum())
+            in_box_t = fd['in_box'][mask]
+            outside += int((~in_box_t).sum())
+            if in_box_t.any():
+                n_detected += 1
+        else:
+            pts, scores = fd.get('pts'), fd.get('scores')
+            if pts is None:
+                continue
+            pts_t = pts[scores >= threshold] if scores is not None else pts
+            if len(pts_t) == 0:
+                continue
+            in_box = points_in_box(pts_t, corners)
+            total   += len(pts_t)
+            outside += int((~in_box).sum())
+            if in_box.any():
+                n_detected += 1
     p_d  = n_detected / n_frames if n_frames > 0 else 0.0
     p_fa = outside / total        if total    > 0 else 0.0
     return p_d, p_fa
@@ -325,13 +375,18 @@ def compute_weather_metrics(frames, threshold, weather):
     if weather == 'clear':
         cd_vals = []
         for fd in frames:
-            if (fd['pts'] is None or fd['box_corners'] is None
+            if (fd['box_corners'] is None
                     or fd['lidar_pts'] is None or len(fd['lidar_pts']) == 0):
                 continue
-            scores = fd['scores']
-            mask   = (scores >= threshold) if scores is not None else np.ones(len(fd['pts']), dtype=bool)
-            pts_in = fd['pts'][mask]
-            pts_in = pts_in[points_in_box(pts_in, fd['box_corners'])] if len(pts_in) else pts_in
+            if 'pts_in_box_thresh' in fd:
+                pts_in = fd['pts_in_box_thresh']
+            else:
+                pts, scores = fd.get('pts'), fd.get('scores')
+                if pts is None or len(pts) == 0:
+                    continue
+                mask   = (scores >= threshold) if scores is not None else np.ones(len(pts), dtype=bool)
+                pts_in = pts[mask]
+                pts_in = pts_in[points_in_box(pts_in, fd['box_corners'])] if len(pts_in) else pts_in
             if len(pts_in) == 0:
                 continue
             val = chamfer_distance(pts_in, fd['lidar_pts'])
@@ -343,14 +398,17 @@ def compute_weather_metrics(frames, threshold, weather):
     bands       = ((0, 5), (5, 10), (10, 15), (15, 20))
     density_acc = {f"{a}-{b}m": [] for a, b in bands}
     for fd in frames:
-        if fd['pts'] is None or fd['box_corners'] is None or np.isnan(fd.get('box_range', np.nan)):
+        if fd['box_corners'] is None or np.isnan(fd.get('box_range', np.nan)):
             continue
-        scores = fd['scores']
-        mask   = (scores >= threshold) if scores is not None else np.ones(len(fd['pts']), dtype=bool)
-        pts_t  = fd['pts'][mask]
-        if len(pts_t) == 0:
-            continue
-        pts_in = pts_t[points_in_box(pts_t, fd['box_corners'])]
+        if 'pts_in_box_thresh' in fd:
+            pts_in = fd['pts_in_box_thresh']
+        else:
+            pts, scores = fd.get('pts'), fd.get('scores')
+            if pts is None or len(pts) == 0:
+                continue
+            mask   = (scores >= threshold) if scores is not None else np.ones(len(pts), dtype=bool)
+            pts_t  = pts[mask]
+            pts_in = pts_t[points_in_box(pts_t, fd['box_corners'])] if len(pts_t) else pts_t
         if len(pts_in) == 0:
             continue
         # bin this frame into the band that matches its box range
@@ -379,7 +437,74 @@ def compute_weather_metrics(frames, threshold, weather):
             'density': density, 'range_metrics': range_metrics}
 
 
+def _box_stats(corners):
+    """Return (box_volume, box_range) from corner array."""
+    dims   = corners.max(axis=0) - corners.min(axis=0)
+    center = (corners.max(axis=0) + corners.min(axis=0)) / 2
+    return float(dims[0] * dims[1] * dims[2]), float(np.sqrt(center[0]**2 + center[1]**2))
+
+
+def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
+    """Collect CFAR frames independently from all calib files (not tied to DL timestamps).
+
+    Each calib file defines one evaluation frame. CFAR files are matched by
+    nearest timestamp within 200 ms. Label files (for Chamfer) are matched
+    within 100 ms when weather == 'clear'.
+    """
+    cfar_dir   = os.path.join(rc_dir, sf.get('cfar', 'cfar'))
+    label_dir  = os.path.join(rc_dir, sf.get('labels', 'labels'))
+
+    has_cfar = os.path.isdir(cfar_dir) and (
+        glob.glob(os.path.join(cfar_dir, '*.npy')) +
+        glob.glob(os.path.join(cfar_dir, '*.txt')))
+    if not has_cfar:
+        return []
+
+    label_files = sorted(glob.glob(os.path.join(label_dir, '*.npy')))
+    label_ts    = np.array([_extract_ts_ms(f) for f in label_files]) if label_files else np.array([])
+
+    frames = []
+    for cf in calib_files:
+        ts_ms = _extract_ts_ms(cf)
+        corners, r2l, R_r2l = _parse_calib_file(cf)
+        if corners is None:
+            continue
+        box_volume, box_range = _box_stats(corners)
+
+        # GT LiDAR pts for Chamfer distance (clear weather only)
+        lidar_pts_in_box = None
+        if weather == 'clear' and len(label_ts) > 0:
+            diffs = np.abs(label_ts - ts_ms)
+            best  = int(np.argmin(diffs))
+            if diffs[best] <= 100:
+                lbl_pts, _ = occupancy_to_points(np.load(label_files[best]), threshold=0.5)
+                lbl_pts    = lbl_pts + r2l
+                if len(lbl_pts) > 0:
+                    lidar_pts_in_box = lbl_pts[points_in_box(lbl_pts, corners)]
+
+        # Load CFAR: Doppler-filtered, binary scores, full coordinate transform
+        pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+        if pts_c is not None and len(pts_c):
+            pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
+
+        frames.append({
+            'pts':         pts_c,
+            'scores':      scores_c,
+            'box_corners': corners,
+            'lidar_pts':   lidar_pts_in_box,
+            'box_volume':  box_volume,
+            'box_range':   box_range,
+        })
+    return frames
+
+
 def collect_frames(rc_folders, base_dir, config, model, device, threshold, weather):
+    """Return (dl_frames, cfar_frames) for all RC folders.
+
+    DL frames: one per prepared-dataset frame (matched by dataset timestamps).
+    CFAR frames: one per calib file (independent timestamps — covers all range
+    bands including frames without matching prepared-dataset entries).
+    """
     sf         = config.get('subfolders', {})
     dl_frames  = []
     cfar_frames = []
@@ -388,46 +513,47 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
         rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
         calib_dir = os.path.join(rc_dir, sf.get('calib', 'calib'))
 
+        calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
+        txt_ts      = np.array([_extract_ts_ms(f) for f in calib_files]) if calib_files else np.array([])
+
+        # ── CFAR frames: independent loop over all calib files ────────────────
+        cfar_frames.extend(_collect_cfar_frames(rc_dir, sf, weather, calib_files))
+
+        # ── DL frames: one per prepared-dataset frame ─────────────────────────
         try:
             ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
         except Exception as e:
-            print(f"  Skipping {rc_name}: {e}")
+            import traceback
+            print(f"  [ERROR] Skipping {rc_name} DL: {e}")
+            traceback.print_exc()
             continue
-
-        txt_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
-        txt_ts    = np.array([_extract_ts_ms(f) for f in txt_files]) if txt_files else np.array([])
-
-        # CFAR lives at base_dir/<rc_name>/<subfolders.cfar>/ (set in eval_config.yaml)
-        cfar_rc = os.path.join(rc_dir, sf.get('cfar', 'cfar'))
-        if not os.path.isdir(cfar_rc) or not (
-                glob.glob(os.path.join(cfar_rc, '*.npy')) +
-                glob.glob(os.path.join(cfar_rc, '*.txt'))):
-            cfar_rc = ''
 
         for idx in tqdm(range(len(ds)), desc=rc_name):
             radar_tensor, label_tensor = ds[idx]
             sample = ds.matched_data[idx]
             ts_ms  = _extract_ts_ms(sample['power'])
 
-            corners, r2l = _find_calib(txt_files, txt_ts, ts_ms)
-            box_volume   = 0.0
-            box_range    = np.nan
-            if corners is not None:
-                dims       = corners.max(axis=0) - corners.min(axis=0)
-                box_volume = float(dims[0] * dims[1] * dims[2])
-                center     = (corners.max(axis=0) + corners.min(axis=0)) / 2
-                box_range  = float(np.sqrt(center[0]**2 + center[1]**2))
+            corners, r2l, R_r2l = _find_calib(calib_files, txt_ts, ts_ms)
+            box_volume, box_range = _box_stats(corners) if corners is not None else (0.0, np.nan)
 
             with torch.no_grad():
                 pred_np = torch.sigmoid(
                     model(radar_tensor.unsqueeze(0).to(device))
                 )[0].cpu().numpy()
 
-            # Use a small floor threshold to discard obvious background voxels;
-            # this bounds memory use in compute_ap (trapz over all sorted points)
-            # while preserving the full shape of the PR curve above 5% confidence.
             pts_dl, scores_dl = occupancy_to_points(pred_np, threshold=0.05)
             pts_dl = pts_dl + r2l
+
+            # Precompute per-point in_box flags — avoids storing raw point clouds
+            if corners is not None and len(pts_dl) > 0:
+                in_box_dl     = points_in_box(pts_dl, corners)
+                mask_thresh   = scores_dl >= threshold
+                pts_thresh    = pts_dl[mask_thresh]
+                ib_thresh     = points_in_box(pts_thresh, corners) if len(pts_thresh) else np.zeros(0, dtype=bool)
+                pts_in_thresh = pts_thresh[ib_thresh] if len(ib_thresh) else np.empty((0, 3), dtype=np.float32)
+            else:
+                in_box_dl     = np.zeros(len(pts_dl), dtype=bool)
+                pts_in_thresh = np.empty((0, 3), dtype=np.float32)
 
             lidar_pts_in_box = None
             if weather == 'clear':
@@ -437,24 +563,14 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                     lidar_pts_in_box = lbl_pts[points_in_box(lbl_pts, corners)]
 
             dl_frames.append({
-                'pts': pts_dl, 'scores': scores_dl,
-                'box_corners': corners, 'lidar_pts': lidar_pts_in_box,
-                'box_volume': box_volume, 'box_range': box_range,
+                'scores':            scores_dl,
+                'in_box':            in_box_dl,
+                'pts_in_box_thresh': pts_in_thresh,
+                'box_corners':       corners,
+                'lidar_pts':         lidar_pts_in_box,
+                'box_volume':        box_volume,
+                'box_range':         box_range,
             })
-
-            if cfar_rc:
-                pts_c, scores_c = _load_cfar(cfar_rc, ts_ms)
-                # Radar .txt files use opposite Y axis vs LiDAR frame (right-hand vs
-                # left-hand convention in the SAVEROAD export). Negate Y to align with
-                # the LiDAR-frame bounding boxes used for point-in-box evaluation.
-                if pts_c is not None and len(pts_c):
-                    pts_c = pts_c.copy()
-                    pts_c[:, 1] = -pts_c[:, 1]
-                cfar_frames.append({
-                    'pts': pts_c, 'scores': scores_c,
-                    'box_corners': corners, 'lidar_pts': lidar_pts_in_box,
-                    'box_volume': box_volume, 'box_range': box_range,
-                })
 
     return dl_frames, cfar_frames
 
@@ -577,33 +693,33 @@ def _save_pred_plot(rc_name, ts_str, frame_idx,
 
 
 def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
-                      rc_name, ts_str, frame_idx, out_path, saveroad_dir=''):
-    if not saveroad_dir or not os.path.isdir(saveroad_dir):
+                      rc_name, ts_str, frame_idx, out_path,
+                      saveroad_dir='', project_points_mod=None):
+    """project_points_mod must be pre-loaded by the caller (validated once per run)."""
+    if project_points_mod is None:
         return
     try:
         import cv2
     except ImportError:
+        print("    [CAM] cv2 not installed — cannot save camera projection")
         return
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from utils.project_to_image import project_to_image
 
-    sys.path.insert(0, saveroad_dir)
-    try:
-        from tools import project_points_v2_withPC as project_points_mod
-    except ImportError:
-        return
-
     img_name, K, r_t, radar_to_lidar = parse_calibration(calib_txt)
     if not img_name:
+        print(f"    [CAM] frame {frame_idx}: PCO_frame missing in {os.path.basename(calib_txt)}")
         return
     img_path = os.path.join(pco_dir, img_name)
     if not os.path.exists(img_path):
+        print(f"    [CAM] frame {frame_idx}: camera image not found: {img_name}")
         return
 
     pts_3d, probs = occupancy_to_points(pred_np, threshold)
     if len(pts_3d) == 0:
+        print(f"    [CAM] frame {frame_idx}: 0 points above threshold {threshold:.3f}")
         return
     pts_3d = pts_3d + radar_to_lidar
     if len(pts_3d) > 150_000:
@@ -612,6 +728,7 @@ def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
 
     img = cv2.imread(img_path)
     if img is None:
+        print(f"    [CAM] frame {frame_idx}: cv2 could not read {img_path}")
         return
 
     img_rgb = cv2.cvtColor(
@@ -638,11 +755,31 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
     """Generate n_plots equally spaced prediction + camera frames per RC folder."""
     import matplotlib
     matplotlib.use('Agg')
+    import traceback
 
     sf              = config.get('subfolders', {})
     saveroad_dir    = config.get('saveroad_dir', '').strip()
     tp_cfg          = config.get('thesis_plots', {})
     do_camera       = bool(tp_cfg.get('camera_projection', True)) and bool(saveroad_dir)
+
+    # Validate saveroad_dir and load tools ONCE before the frame loop
+    project_points_mod = None
+    if do_camera:
+        if not os.path.isdir(saveroad_dir):
+            print(f"  [CAM ERROR] saveroad_dir not found: {saveroad_dir}")
+            print(f"              Camera projection disabled for this run.")
+            do_camera = False
+        else:
+            sys.path.insert(0, saveroad_dir)
+            try:
+                from tools import project_points_v2_withPC as _pm
+                project_points_mod = _pm
+                print(f"  Camera projection tools loaded OK from: {saveroad_dir}")
+            except ImportError as e:
+                print(f"  [CAM ERROR] Cannot import project_points_v2_withPC: {e}")
+                print(f"              Check that the .so suffix matches your Python version.")
+                print(f"              e.g. project_points_v2_withPC.cpython-310-x86_64-linux-gnu.so for Python 3.10")
+                do_camera = False
 
     for rc_name in rc_folders:
         rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
@@ -737,13 +874,18 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
                                 txt_files[best], pco_dir, pred_np,
                                 cam_threshold, rc_name, ts_str, idx,
                                 os.path.join(cam_dir, f'frame_{idx:03d}_{ts_str}.png'),
-                                saveroad_dir=saveroad_dir
+                                saveroad_dir=saveroad_dir,
+                                project_points_mod=project_points_mod,
                             )
                         except Exception as e:
-                            print(f"    [WARN] Camera frame {idx}: {e}")
+                            print(f"    [CAM ERROR] frame {idx}: {e}")
+                            traceback.print_exc()
+                    else:
+                        print(f"    [CAM] frame {idx}: no calib within 200ms (gap={diff[best]}ms)")
 
             except Exception as e:
                 print(f"    [WARN] Frame {idx} skipped: {e}")
+                traceback.print_exc()
 
         print(f"    Plots  -> {os.path.abspath(plot_dir)}  ({saved_plots}/{len(indices)} saved)")
         if do_camera and has_camera:
@@ -765,148 +907,147 @@ def run_weather(config, ckpt, out_dir):
         print("ERROR: set eval_splits in eval_config.yaml")
         return
 
+    eval_metrics = bool(config.get('eval_metrics', True))
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model  = _load_model(config, ckpt, device)
     print(f"\nWeather eval -- threshold={threshold}  device={device}")
+    if not eval_metrics:
+        print("  [INFO] eval_metrics: false — skipping AP/P_d/P_fa/CD computation")
 
     all_results = {}
 
-    for weather, rc_folders in weather_splits.items():
-        if not rc_folders:
-            continue
-        print(f"\n{'='*60}")
-        print(f"  {weather.upper()} -- {rc_folders}")
-        print('='*60)
-
-        dl_frames, cfar_frames = collect_frames(
-            rc_folders, base_dir, config, model, device,
-            threshold, weather)
-
-        print(f"  {len(dl_frames)} frames collected")
-        dl_m = compute_weather_metrics(dl_frames, threshold, weather)
-        all_results[weather] = {'DL': dl_m}
-
-        if cfar_frames and any(f['pts'] is not None for f in cfar_frames):
-            cfar_m = compute_weather_metrics(cfar_frames, 0.5, weather)
-            all_results[weather]['CFAR'] = cfar_m
-
-    # -- Results table ---------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("RESULTS TABLE")
-    print(f"{'='*60}")
-    print(f"{'Weather':<8} {'Method':<6} {'AP':>6} {'P_d':>6} {'P_fa':>6} {'CD':>9}")
-    print('-' * 48)
-
-    for weather in ['clear', 'fog', 'rain']:
-        if weather not in all_results:
-            continue
-        for method, m in all_results[weather].items():
-            cd_s = f"{m['CD']:9.4f}" if not np.isnan(m['CD']) else '      N/A'
-            print(f"{weather:<8} {method:<6} {m['AP']:6.3f} {m['P_d']:6.3f} {m['P_fa']:6.3f} {cd_s}")
-
-    # -- Degradation -----------------------------------------------------------
-    if 'clear' in all_results:
-        print(f"\n{'='*60}")
-        print("DEGRADATION  (clear -> weather)  lower % = more robust")
-        print(f"{'='*60}")
-        print(f"{'Weather':<8} {'Method':<6} {'AP deg%':>8} {'P_d deg%':>9} {'P_fa deg%':>10}")
-        print('-' * 45)
-
-        def _deg(c, w):
-            return f"{(c - w) / c * 100:8.1f}%" if c > 0 else '     N/A'
-
-        for weather in ['fog', 'rain']:
-            if weather not in all_results:
+    if eval_metrics:
+        for weather, rc_folders in weather_splits.items():
+            if not rc_folders:
                 continue
-            for method in ['DL', 'CFAR']:
-                if method not in all_results.get('clear', {}) or \
-                   method not in all_results.get(weather, {}):
-                    continue
-                c = all_results['clear'][weather]    if False else all_results['clear'][method]
-                w = all_results[weather][method]
-                print(f"{weather:<8} {method:<6} "
-                      f"{_deg(c['AP'], w['AP'])} "
-                      f"{_deg(c['P_d'], w['P_d'])} "
-                      f"{_deg(c['P_fa'], w['P_fa'])}")
+            print(f"\n{'='*60}")
+            print(f"  {weather.upper()} -- {rc_folders}")
+            print('='*60)
 
-    # -- Point density ---------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("POINT DENSITY  (pts/m^3 inside GT box)")
-    print(f"{'='*60}")
-    print(f"{'Weather':<8} {'Method':<6} {'0-5m':>8} {'5-10m':>8} {'10-15m':>8} {'15-20m':>8}")
-    print('-' * 50)
+            dl_frames, cfar_frames = collect_frames(
+                rc_folders, base_dir, config, model, device,
+                threshold, weather)
 
-    def _fd(v):
-        return f"{v:8.3f}" if not np.isnan(v) else '     N/A'
+            print(f"  {len(dl_frames)} frames collected")
+            dl_m = compute_weather_metrics(dl_frames, threshold, weather)
+            all_results[weather] = {'DL': dl_m}
 
-    for weather in ['clear', 'fog', 'rain']:
-        if weather not in all_results:
-            continue
-        for method, m in all_results[weather].items():
-            d = m['density']
-            print(f"{weather:<8} {method:<6} "
-                  f"{_fd(d.get('0-5m',   np.nan))} "
-                  f"{_fd(d.get('5-10m',  np.nan))} "
-                  f"{_fd(d.get('10-15m', np.nan))} "
-                  f"{_fd(d.get('15-20m', np.nan))}")
+            if cfar_frames and any(f['pts'] is not None for f in cfar_frames):
+                cfar_m = compute_weather_metrics(cfar_frames, 0.5, weather)
+                all_results[weather]['CFAR'] = cfar_m
 
-    # -- Range-band P_d / AP / P_fa -------------------------------------------
-    range_bands = ['0-5m', '5-10m', '10-15m', '15-20m']
-    has_range = any(
-        bool(all_results[w][meth].get('range_metrics'))
-        for w in all_results for meth in all_results[w]
-    )
-    if has_range:
+    if all_results:
+        # -- Results table -----------------------------------------------------
         print(f"\n{'='*60}")
-        print("RANGE-BAND DETECTION  (P_d / AP per distance band)")
+        print("RESULTS TABLE")
         print(f"{'='*60}")
-        print(f"{'Weather':<8} {'Method':<6} {'Band':<10} {'n':>5} {'AP':>6} {'P_d':>6} {'P_fa':>6}")
-        print('-' * 52)
+        print(f"{'Weather':<8} {'Method':<6} {'AP':>6} {'P_d':>6} {'P_fa':>6} {'CD':>9}")
+        print('-' * 48)
         for weather in ['clear', 'fog', 'rain']:
             if weather not in all_results:
                 continue
             for method, m in all_results[weather].items():
-                rm = m.get('range_metrics', {})
-                for band in range_bands:
-                    if band not in rm:
-                        continue
-                    bm = rm[band]
-                    print(f"{weather:<8} {method:<6} {band:<10} {bm['n']:>5} "
-                          f"{bm['AP']:6.3f} {bm['P_d']:6.3f} {bm['P_fa']:6.3f}")
+                cd_s = f"{m['CD']:9.4f}" if not np.isnan(m['CD']) else '      N/A'
+                print(f"{weather:<8} {method:<6} {m['AP']:6.3f} {m['P_d']:6.3f} {m['P_fa']:6.3f} {cd_s}")
 
-    # -- Save CSV --------------------------------------------------------------
-    os.makedirs(out_dir, exist_ok=True)
-    out_csv = os.path.join(out_dir, 'weather_results.csv')
-    with open(out_csv, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Weather', 'Method', 'AP', 'P_d', 'P_fa', 'Chamfer_Distance',
-                         'Density_0-5m', 'Density_5-10m', 'Density_10-15m', 'Density_15-20m'])
+        # -- Degradation -------------------------------------------------------
+        if 'clear' in all_results:
+            print(f"\n{'='*60}")
+            print("DEGRADATION  (clear -> weather)  lower % = more robust")
+            print(f"{'='*60}")
+            print(f"{'Weather':<8} {'Method':<6} {'AP deg%':>8} {'P_d deg%':>9} {'P_fa deg%':>10}")
+            print('-' * 45)
+            def _deg(c, w):
+                return f"{(c - w) / c * 100:8.1f}%" if c > 0 else '     N/A'
+            for weather in ['fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method in ['DL', 'CFAR']:
+                    if method not in all_results.get('clear', {}) or \
+                       method not in all_results.get(weather, {}):
+                        continue
+                    c = all_results['clear'][method]
+                    w = all_results[weather][method]
+                    print(f"{weather:<8} {method:<6} "
+                          f"{_deg(c['AP'], w['AP'])} "
+                          f"{_deg(c['P_d'], w['P_d'])} "
+                          f"{_deg(c['P_fa'], w['P_fa'])}")
+
+        # -- Point density -----------------------------------------------------
+        print(f"\n{'='*60}")
+        print("POINT DENSITY  (pts/m^3 inside GT box)")
+        print(f"{'='*60}")
+        print(f"{'Weather':<8} {'Method':<6} {'0-5m':>8} {'5-10m':>8} {'10-15m':>8} {'15-20m':>8}")
+        print('-' * 50)
+        def _fd(v):
+            return f"{v:8.3f}" if not np.isnan(v) else '     N/A'
         for weather in ['clear', 'fog', 'rain']:
             if weather not in all_results:
                 continue
             for method, m in all_results[weather].items():
                 d = m['density']
-                writer.writerow([
-                    weather, method,
-                    f"{m['AP']:.4f}", f"{m['P_d']:.4f}", f"{m['P_fa']:.4f}",
-                    f"{m['CD']:.4f}" if not np.isnan(m['CD']) else 'N/A',
-                    f"{d.get('0-5m',   np.nan):.4f}" if not np.isnan(d.get('0-5m',   np.nan)) else 'N/A',
-                    f"{d.get('5-10m',  np.nan):.4f}" if not np.isnan(d.get('5-10m',  np.nan)) else 'N/A',
-                    f"{d.get('10-15m', np.nan):.4f}" if not np.isnan(d.get('10-15m', np.nan)) else 'N/A',
-                    f"{d.get('15-20m', np.nan):.4f}" if not np.isnan(d.get('15-20m', np.nan)) else 'N/A',
-                ])
-        # Range-band rows
-        writer.writerow([])
-        writer.writerow(['Weather', 'Method', 'Band', 'n_frames', 'AP', 'P_d', 'P_fa'])
-        for weather in ['clear', 'fog', 'rain']:
-            if weather not in all_results:
-                continue
-            for method, m in all_results[weather].items():
-                for band, bm in m.get('range_metrics', {}).items():
-                    writer.writerow([weather, method, band, bm['n'],
-                                     f"{bm['AP']:.4f}", f"{bm['P_d']:.4f}", f"{bm['P_fa']:.4f}"])
+                print(f"{weather:<8} {method:<6} "
+                      f"{_fd(d.get('0-5m',   np.nan))} "
+                      f"{_fd(d.get('5-10m',  np.nan))} "
+                      f"{_fd(d.get('10-15m', np.nan))} "
+                      f"{_fd(d.get('15-20m', np.nan))}")
 
-    print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
+        # -- Range-band P_d / AP / P_fa ----------------------------------------
+        range_bands = ['0-5m', '5-10m', '10-15m', '15-20m']
+        has_range = any(
+            bool(all_results[w][meth].get('range_metrics'))
+            for w in all_results for meth in all_results[w]
+        )
+        if has_range:
+            print(f"\n{'='*60}")
+            print("RANGE-BAND DETECTION  (P_d / AP per distance band)")
+            print(f"{'='*60}")
+            print(f"{'Weather':<8} {'Method':<6} {'Band':<10} {'n':>5} {'AP':>6} {'P_d':>6} {'P_fa':>6}")
+            print('-' * 52)
+            for weather in ['clear', 'fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method, m in all_results[weather].items():
+                    rm = m.get('range_metrics', {})
+                    for band in range_bands:
+                        if band not in rm:
+                            continue
+                        bm = rm[band]
+                        print(f"{weather:<8} {method:<6} {band:<10} {bm['n']:>5} "
+                              f"{bm['AP']:6.3f} {bm['P_d']:6.3f} {bm['P_fa']:6.3f}")
+
+        # -- Save CSV ----------------------------------------------------------
+        os.makedirs(out_dir, exist_ok=True)
+        out_csv = os.path.join(out_dir, 'weather_results.csv')
+        with open(out_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Weather', 'Method', 'AP', 'P_d', 'P_fa', 'Chamfer_Distance',
+                             'Density_0-5m', 'Density_5-10m', 'Density_10-15m', 'Density_15-20m'])
+            for weather in ['clear', 'fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method, m in all_results[weather].items():
+                    d = m['density']
+                    writer.writerow([
+                        weather, method,
+                        f"{m['AP']:.4f}", f"{m['P_d']:.4f}", f"{m['P_fa']:.4f}",
+                        f"{m['CD']:.4f}" if not np.isnan(m['CD']) else 'N/A',
+                        f"{d.get('0-5m',   np.nan):.4f}" if not np.isnan(d.get('0-5m',   np.nan)) else 'N/A',
+                        f"{d.get('5-10m',  np.nan):.4f}" if not np.isnan(d.get('5-10m',  np.nan)) else 'N/A',
+                        f"{d.get('10-15m', np.nan):.4f}" if not np.isnan(d.get('10-15m', np.nan)) else 'N/A',
+                        f"{d.get('15-20m', np.nan):.4f}" if not np.isnan(d.get('15-20m', np.nan)) else 'N/A',
+                    ])
+            writer.writerow([])
+            writer.writerow(['Weather', 'Method', 'Band', 'n_frames', 'AP', 'P_d', 'P_fa'])
+            for weather in ['clear', 'fog', 'rain']:
+                if weather not in all_results:
+                    continue
+                for method, m in all_results[weather].items():
+                    for band, bm in m.get('range_metrics', {}).items():
+                        writer.writerow([weather, method, band, bm['n'],
+                                         f"{bm['AP']:.4f}", f"{bm['P_d']:.4f}", f"{bm['P_fa']:.4f}"])
+        print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
 
     # -- Thesis figures --------------------------------------------------------
     tp_cfg         = config.get('thesis_plots', {})
