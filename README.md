@@ -14,6 +14,8 @@ conda activate thesis_model
 pip install -r requirements.txt
 ```
 
+> **Always activate `thesis_model` before running any script.** The base conda env has CPU-only PyTorch and will silently train on CPU.
+
 ---
 
 ## Step 1 — Prepare the dataset (run once)
@@ -142,8 +144,11 @@ Edit `configs/eval_config.yaml`:
 eval_mode: basic
 checkpoint: 'checkpoints/<run_id>/best_model.pth'
 base_dir: '/media/SSD2/radar_dataset/'
+eval_splits:
+  clear: [RC019]
+  fog:   []
+  rain:  []
 basic:
-  dataset: RC019     # any RC folder from your test set
   threshold: 0.4
 ```
 
@@ -160,22 +165,88 @@ Prints IoU, Precision, Recall. IoU > 0.10 means the model is learning.
 Edit `configs/eval_config.yaml`:
 ```yaml
 eval_mode: weather
+eval_metrics: true
 checkpoint: 'checkpoints/<run_id>/best_model.pth'
 base_dir: '/media/SSD2/radar_dataset/'
+
+eval_splits:
+  clear: [RC019, RC032, RC033]   # RC folders recorded in clear weather
+  fog:   [RC031]                 # fog conditions
+  rain:  [RC036]                 # rain conditions
+                                 # any empty list is silently skipped
+
 weather:
   threshold: 0.4
-  weather_splits:
-    clear: [RC019, RC032, RC033]
-    fog:   [RC031]
-    rain:  [RC036]
 ```
 
 ```bash
 python utils/thesis_eval.py --config configs/eval_config.yaml
 ```
 
-Produces AP, P_d, P_fa per weather condition. Chamfer Distance is clear weather only.  
-Results saved to `verification_output/eval/weather_results.csv`.
+Produces AP, P_d, P_fa, Chamfer Distance, and point density per range band for both the DL model and CFAR baseline. Results saved to `<out_dir>/weather_results.csv`.
+
+> Set `eval_metrics: false` to skip metrics and only run figure generation — useful when you want to regenerate plots without the full evaluation pass.
+
+### What the CFAR baseline does
+
+CFAR detections are read from the `cfar/` subfolder inside each RC folder. Each detection file has columns `[x, y, z, doppler_velocity]`. The evaluation applies a **Doppler gate** (`velocity < -1.8 m/s`) to keep only approaching targets before computing metrics — this matches the physical expectation that the ego vehicle is approaching a stationary obstacle.
+
+CFAR frames are collected independently from all calib files, not just the frames in the prepared dataset. This means CFAR evaluation covers the full range of target distances including 10–20 m frames.
+
+---
+
+## Step 5 — CFAR-only evaluation (no model needed)
+
+If you want CFAR metrics without loading the DL model:
+
+```bash
+python utils/cfar_only_eval.py --config configs/eval_config.yaml
+```
+
+This runs the same CFAR evaluation pipeline as `thesis_eval.py` but skips model loading entirely. Useful for verifying CFAR metrics in isolation or on machines without a GPU.
+
+---
+
+## Step 6 — Camera projection figures
+
+Generates 2-panel camera overlay images for visual inspection:
+
+- **Left panel** — DL model occupancy projected onto the camera image (green dots)
+- **Right panel** — CFAR Doppler-filtered detections projected onto the camera image (orange dots)
+- Both panels show the GT bounding box (red) and range in the title
+
+### Option A — Combined run (figures generated after eval)
+
+In `configs/eval_config.yaml`:
+```yaml
+thesis_plots:
+  enable:            true
+  camera_projection: true   # set this
+  n_plots:           5      # frames per RC folder
+  threshold:         0.4
+```
+
+```bash
+python utils/thesis_eval.py --config configs/eval_config.yaml
+```
+
+### Option B — Standalone (if the combined run fails or you only need figures)
+
+```bash
+# All RC folders from eval_splits:
+python utils/gen_camera_proj.py --config configs/eval_config.yaml
+
+# Only specific RC folders:
+python utils/gen_camera_proj.py --config configs/eval_config.yaml --rc RC019 RC031
+
+# Override number of frames and checkpoint:
+python utils/gen_camera_proj.py --config configs/eval_config.yaml --n_plots 10 \
+    --checkpoint checkpoints/<run_id>/best_model.pth
+```
+
+**Requirement:** `pco/` subfolder must exist inside each RC folder in the prepared dataset (standard layout — contains the camera `.jpg` images referenced in the calib files).
+
+Output: `<out_dir>/camera_projection/<rc_name>/frame_01_range8.3m.png`, etc.
 
 ---
 
@@ -190,11 +261,15 @@ checkpoints/
     tensorboard/        TensorBoard events
 
 verification_output/eval/
-  basic_results.csv
-  weather_results.csv
+  weather_results.csv         AP / P_d / P_fa / CD / density, DL vs CFAR
   thesis_figures/
     <RC_folder>/
-      prediction_plots/   3-row mosaic PNGs
+      prediction_plots/       3-row mosaic PNGs (radar input, prediction, GT)
+  camera_projection/
+    <RC_folder>/
+      frame_01_range8.3m.png  2-panel DL-vs-CFAR camera overlay
+      frame_02_range12.1m.png
+      ...
 ```
 
 ---
@@ -212,3 +287,18 @@ verification_output/eval/
 | `training.loss` | `weighted_bce` (default) — see [PIPELINE_OVERVIEW.md](PIPELINE_OVERVIEW.md) for others |
 | `training.pos_weight` | Weight for occupied voxels (default 10.0) |
 | `logging.tensorboard` | `true` to enable TensorBoard |
+
+## Key config options (`configs/eval_config.yaml`)
+
+| Option | What it does |
+|---|---|
+| `checkpoint` | Path to `best_model.pth` to evaluate |
+| `base_dir` | Root of the prepared dataset |
+| `eval_mode` | `basic` (quick IoU check) / `weather` (full thesis eval) |
+| `eval_metrics` | `true` to compute AP/P_d/P_fa/CD; `false` to skip and only generate figures |
+| `eval_splits.clear/fog/rain` | RC folder lists per weather condition; empty lists are skipped |
+| `weather.threshold` | Occupancy threshold for DL predictions (default 0.4) |
+| `thesis_plots.enable` | `true` to generate BEV prediction mosaic PNGs |
+| `thesis_plots.camera_projection` | `true` to generate 2-panel DL-vs-CFAR camera overlay PNGs |
+| `thesis_plots.n_plots` | Frames per RC folder for figure generation (default 5) |
+| `out_dir` | Root output directory for all results and figures |
