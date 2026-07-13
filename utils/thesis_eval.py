@@ -1033,6 +1033,9 @@ def generate_camera_projection_plots(rc_folders, base_dir, config, model, device
                     for (x, y) in px_d[valid]:
                         cv2.circle(img_dl, (int(x), int(y)), 4, DL_COLOR, -1)
                     n_dl = int(valid.sum())
+            if n_dl == 0:
+                print(f'    frame {fi+1}: no DL points projected — skipping')
+                continue
             _draw_bbox_cam(img_dl, corners, K, r_t, BOX_COLOR, thickness=2)
 
             # CFAR panel
