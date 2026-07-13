@@ -97,7 +97,7 @@ weather:
 thesis_plots:
   enable:            true
   n_plots:           5       # frames per RC folder (equally spaced)
-  raw_prediction:    true    # true -> raw probability output; false -> apply threshold
+  raw_prediction:    false   # true -> raw probability output; false -> apply threshold
   threshold:         0.4     # used only when raw_prediction: false
   # Set camera_projection: true to generate 2-panel DL-vs-CFAR camera overlay figures.
   # Requires pco/ and calib/ subfolders in each RC folder (standard prepared dataset layout).
