@@ -789,9 +789,8 @@ def _save_pred_plot(rc_name, ts_str, frame_idx,
 def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
                       rc_name, ts_str, frame_idx, out_path,
                       saveroad_dir='', project_points_mod=None):
-    """project_points_mod must be pre-loaded by the caller (validated once per run)."""
-    if project_points_mod is None:
-        return
+    """project_points_mod is the Cython extension; if None, falls back to NumPy."""
+    use_numpy = project_points_mod is None
     try:
         import cv2
     except ImportError:
@@ -800,7 +799,6 @@ def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    from utils.project_to_image import project_to_image
 
     img_name, K, r_t, radar_to_lidar = parse_calibration(calib_txt)
     if not img_name:
@@ -825,10 +823,21 @@ def _save_camera_proj(calib_txt, pco_dir, pred_np, threshold,
         print(f"    [CAM] frame {frame_idx}: cv2 could not read {img_path}")
         return
 
-    img_rgb = cv2.cvtColor(
-        project_to_image(pts_3d, probs, img, K, r_t, project_points_mod),
-        cv2.COLOR_BGR2RGB
-    )
+    if use_numpy:
+        px, front = _project_pts_cam(pts_3d.astype(np.float64), K, r_t)
+        h2, w2 = img.shape[:2]
+        valid = _in_image(px, h2, w2)
+        cmap = plt.cm.turbo
+        for (x, y), p in zip(px[valid], probs[front][valid]):
+            bgr = tuple(int(c * 255) for c in reversed(cmap(float(p))[:3]))
+            cv2.circle(img, (int(x), int(y)), 3, bgr, -1)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    else:
+        from utils.project_to_image import project_to_image
+        img_rgb = cv2.cvtColor(
+            project_to_image(pts_3d, probs, img, K, r_t, project_points_mod),
+            cv2.COLOR_BGR2RGB
+        )
 
     fig, ax = plt.subplots(figsize=(16, 9))
     ax.imshow(img_rgb)
@@ -1098,10 +1107,10 @@ def generate_thesis_plots(rc_folders, base_dir, config, model, device,
                 project_points_mod = _pm
                 print(f"  Camera projection tools loaded OK from: {saveroad_dir}")
             except ImportError as e:
-                print(f"  [CAM ERROR] Cannot import project_points_v2_withPC: {e}")
-                print(f"              Check that the .so suffix matches your Python version.")
-                print(f"              e.g. project_points_v2_withPC.cpython-310-x86_64-linux-gnu.so for Python 3.10")
-                do_camera = False
+                print(f"  [CAM WARN] project_points_v2_withPC not found: {e}")
+                print(f"             Falling back to NumPy projection (Cython not compiled for this platform).")
+                print(f"             To build Cython: cd {saveroad_dir}/tools && python setup_v2_withPC.py build_ext --inplace")
+                # project_points_mod stays None → _save_camera_proj uses NumPy fallback
 
     for rc_name in rc_folders:
         rc_dir = os.path.join(base_dir, rc_name) if base_dir else rc_name
