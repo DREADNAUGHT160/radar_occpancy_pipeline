@@ -956,7 +956,7 @@ def generate_camera_projection_plots(rc_folders, base_dir, config, model, device
                         torch.cuda.empty_cache()
                 pts_dl, _ = occupancy_to_points(pred_np, threshold)
                 if len(pts_dl) > 0:
-                    pts_dl_l = (pts_dl + t_r2l).astype(np.float64)
+                    pts_dl_l = pts_dl.astype(np.float64)   # already in LiDAR frame
                     px_d, front_d = _project_pts_cam(pts_dl_l, K, r_t)
                     valid = _in_image(px_d, h, w)
                     for (x, y) in px_d[valid]:
