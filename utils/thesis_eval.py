@@ -503,8 +503,17 @@ def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
     return frames
 
 
+def _range_band(r):
+    """Return band label string for a box range in metres."""
+    if np.isnan(r): return 'unknown'
+    for lo, hi in [(0,5),(5,10),(10,15),(15,20),(20,30)]:
+        if lo <= r < hi:
+            return f'{lo}-{hi}m'
+    return f'{r:.0f}m+'
+
+
 def collect_frames(rc_folders, base_dir, config, model, device, threshold, weather):
-    """Return (dl_frames, cfar_frames) for all RC folders.
+    """Return (dl_frames, cfar_frames, match_log) for all RC folders.
 
     DL frames: one per prepared-dataset frame (synced radar+LiDAR).
     CFAR frames use a hybrid approach:
@@ -512,10 +521,14 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
         per-band comparison for the 0-5m and 5-10m bands.
       - Extended: remaining calib frames not covered by any DL timestamp —
         adds the 10-15m and 15-20m bands where DL has no labels.
+
+    match_log: list of dicts, one per CFAR frame, recording the matching
+    details. Written to frame_match_log.csv by run_weather.
     """
     sf          = config.get('subfolders', {})
     dl_frames   = []
     cfar_frames = []
+    match_log   = []
 
     for rc_name in rc_folders:
         rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
@@ -524,6 +537,11 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
 
         calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
         txt_ts      = np.array([_extract_ts_ms(f) for f in calib_files]) if calib_files else np.array([])
+
+        # Pre-index CFAR timestamps for delta calculation in the log
+        cfar_files = sorted(glob.glob(os.path.join(cfar_dir, '*.txt')) +
+                            glob.glob(os.path.join(cfar_dir, '*.npy')))
+        cfar_ts    = np.array([_extract_ts_ms(f) for f in cfar_files]) if cfar_files else np.array([])
 
         # ── DL frames: one per prepared-dataset frame ─────────────────────────
         try:
@@ -582,7 +600,8 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
 
             # ── Matched CFAR: same timestamp as this DL frame (1-to-1) ────────
             pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
-            if pts_c is not None and len(pts_c) and corners is not None:
+            cfar_found = pts_c is not None and len(pts_c) > 0
+            if cfar_found and corners is not None:
                 pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
             cfar_frames.append({
                 'pts':         pts_c,
@@ -591,6 +610,25 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                 'lidar_pts':   lidar_pts_in_box,
                 'box_volume':  box_volume,
                 'box_range':   box_range,
+            })
+
+            # Log entry for this matched frame
+            cfar_ts_matched = ''
+            delta_ms        = ''
+            if len(cfar_ts) > 0:
+                ci = int(np.argmin(np.abs(cfar_ts - ts_ms)))
+                if abs(cfar_ts[ci] - ts_ms) <= 200:
+                    cfar_ts_matched = cfar_ts[ci]
+                    delta_ms        = abs(cfar_ts[ci] - ts_ms)
+            match_log.append({
+                'rc':           rc_name,
+                'type':         'matched',
+                'dl_ts_ms':     ts_ms,
+                'cfar_ts_ms':   cfar_ts_matched,
+                'delta_ms':     delta_ms,
+                'cfar_found':   cfar_found,
+                'box_range_m':  f'{box_range:.2f}' if not np.isnan(box_range) else '',
+                'band':         _range_band(box_range),
             })
 
         # ── Extended CFAR: calib timestamps NOT covered by any DL frame ───────
@@ -602,9 +640,33 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
         else:
             extra_calib = calib_files
         if extra_calib:
-            cfar_frames.extend(_collect_cfar_frames(rc_dir, sf, weather, extra_calib))
+            ext_frames = _collect_cfar_frames(rc_dir, sf, weather, extra_calib)
+            cfar_frames.extend(ext_frames)
 
-    return dl_frames, cfar_frames
+            # Log entries for extended frames
+            for cf, ef in zip(extra_calib, ext_frames):
+                calib_ts_ms = _extract_ts_ms(cf)
+                cfar_found_ext = ef.get('pts') is not None and len(ef.get('pts', [])) > 0
+                cfar_ts_ext = ''
+                delta_ext   = ''
+                if len(cfar_ts) > 0:
+                    ci = int(np.argmin(np.abs(cfar_ts - calib_ts_ms)))
+                    if abs(cfar_ts[ci] - calib_ts_ms) <= 200:
+                        cfar_ts_ext = cfar_ts[ci]
+                        delta_ext   = abs(cfar_ts[ci] - calib_ts_ms)
+                br = ef.get('box_range', float('nan'))
+                match_log.append({
+                    'rc':           rc_name,
+                    'type':         'extended',
+                    'dl_ts_ms':     '',
+                    'cfar_ts_ms':   cfar_ts_ext,
+                    'delta_ms':     delta_ext,
+                    'cfar_found':   cfar_found_ext,
+                    'box_range_m':  f'{br:.2f}' if not np.isnan(br) else '',
+                    'band':         _range_band(br),
+                })
+
+    return dl_frames, cfar_frames, match_log
 
 
 # -----------------------------------------------------------------------------
@@ -1175,7 +1237,8 @@ def run_weather(config, ckpt, out_dir):
     if not eval_metrics:
         print("  [INFO] eval_metrics: false — skipping AP/P_d/P_fa/CD computation")
 
-    all_results = {}
+    all_results   = {}
+    all_match_logs = []
 
     if eval_metrics:
         for weather, rc_folders in weather_splits.items():
@@ -1185,9 +1248,10 @@ def run_weather(config, ckpt, out_dir):
             print(f"  {weather.upper()} -- {rc_folders}")
             print('='*60)
 
-            dl_frames, cfar_frames = collect_frames(
+            dl_frames, cfar_frames, log = collect_frames(
                 rc_folders, base_dir, config, model, device,
                 threshold, weather)
+            all_match_logs.extend(log)
 
             print(f"  {len(dl_frames)} frames collected")
             dl_m = compute_weather_metrics(dl_frames, threshold, weather)
@@ -1308,6 +1372,21 @@ def run_weather(config, ckpt, out_dir):
                         writer.writerow([weather, method, band, bm['n'],
                                          f"{bm['AP']:.4f}", f"{bm['P_d']:.4f}", f"{bm['P_fa']:.4f}"])
         print(f"\n  Results saved -> {os.path.abspath(out_csv)}")
+
+        # -- Frame match log ---------------------------------------------------
+        if all_match_logs:
+            log_csv = os.path.join(out_dir, 'frame_match_log.csv')
+            log_fields = ['rc', 'type', 'dl_ts_ms', 'cfar_ts_ms',
+                          'delta_ms', 'cfar_found', 'box_range_m', 'band']
+            with open(log_csv, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=log_fields)
+                writer.writeheader()
+                writer.writerows(all_match_logs)
+            print(f"  Match log saved -> {os.path.abspath(log_csv)}")
+            matched_n  = sum(1 for r in all_match_logs if r['type'] == 'matched')
+            extended_n = sum(1 for r in all_match_logs if r['type'] == 'extended')
+            found_n    = sum(1 for r in all_match_logs if r['cfar_found'])
+            print(f"  matched={matched_n}  extended={extended_n}  cfar_found={found_n}/{matched_n+extended_n}")
 
     # -- Thesis figures --------------------------------------------------------
     tp_cfg         = config.get('thesis_plots', {})
