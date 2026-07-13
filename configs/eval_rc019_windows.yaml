@@ -1,5 +1,9 @@
 checkpoint: 'D:/thesis data/thesis/model_pipeline/checkpoints/20260417_090255/best_model.pth'
 
+# Absolute path to camera images (PCO) for this RC folder.
+# Overrides the default: base_dir/RC_name/pco
+pco_dir: 'D:/thesis data/SAVEROAD_DataLoader_main/18_RC019/data/pco'
+
 model:
   name: resnet18_radar
   in_channels: 2

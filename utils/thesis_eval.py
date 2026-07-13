@@ -29,6 +29,11 @@ import torch
 from tqdm import tqdm
 from pathlib import Path
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -501,9 +506,12 @@ def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
 def collect_frames(rc_folders, base_dir, config, model, device, threshold, weather):
     """Return (dl_frames, cfar_frames) for all RC folders.
 
-    Both DL and CFAR are evaluated on the same set of frames (DL dataset
-    timestamps) so that n_frames is identical for a fair comparison.
-    For each DL frame, the nearest CFAR file within 200 ms is used.
+    DL frames: one per prepared-dataset frame (synced radar+LiDAR).
+    CFAR frames use a hybrid approach:
+      - Matched: one CFAR per DL frame at the same timestamp — ensures fair
+        per-band comparison for the 0-5m and 5-10m bands.
+      - Extended: remaining calib frames not covered by any DL timestamp —
+        adds the 10-15m and 15-20m bands where DL has no labels.
     """
     sf          = config.get('subfolders', {})
     dl_frames   = []
@@ -517,11 +525,6 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
         calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
         txt_ts      = np.array([_extract_ts_ms(f) for f in calib_files]) if calib_files else np.array([])
 
-        # Pre-index CFAR files for fast timestamp lookup
-        cfar_files = sorted(glob.glob(os.path.join(cfar_dir, '*.txt')) +
-                            glob.glob(os.path.join(cfar_dir, '*.npy')))
-        cfar_ts    = np.array([_extract_ts_ms(f) for f in cfar_files]) if cfar_files else np.array([])
-
         # ── DL frames: one per prepared-dataset frame ─────────────────────────
         try:
             ds = RadarDataset(rc_dir, augment=False, config=_build_ds_config(config, rc_dir))
@@ -531,10 +534,13 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             traceback.print_exc()
             continue
 
+        dl_ts_list = []
+
         for idx in tqdm(range(len(ds)), desc=rc_name):
             radar_tensor, label_tensor = ds[idx]
             sample = ds.matched_data[idx]
             ts_ms  = _extract_ts_ms(sample['power'])
+            dl_ts_list.append(ts_ms)
 
             corners, r2l, R_r2l = _find_calib(calib_files, txt_ts, ts_ms)
             box_volume, box_range = _box_stats(corners) if corners is not None else (0.0, np.nan)
@@ -547,7 +553,6 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             pts_dl, scores_dl = occupancy_to_points(pred_np, threshold=0.05)
             pts_dl = pts_dl + r2l
 
-            # Precompute per-point in_box flags — avoids storing raw point clouds
             if corners is not None and len(pts_dl) > 0:
                 in_box_dl     = points_in_box(pts_dl, corners)
                 mask_thresh   = scores_dl >= threshold
@@ -575,32 +580,29 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                 'box_range':         box_range,
             })
 
-            # ── CFAR frame at the same timestamp (1-to-1 with DL) ────────────
-            pts_c, scores_c = None, None
-            if len(cfar_ts) > 0:
-                ci = int(np.argmin(np.abs(cfar_ts - ts_ms)))
-                if abs(cfar_ts[ci] - ts_ms) <= 200:
-                    pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
-                    if pts_c is not None and len(pts_c) and corners is not None:
-                        pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
-
-            in_box_c = np.zeros(0, dtype=bool)
-            if pts_c is not None and corners is not None and len(pts_c):
-                in_box_c = points_in_box(pts_c, corners)
-
-            lidar_pts_cfar = None
-            if weather == 'clear' and corners is not None:
-                lidar_pts_cfar = lidar_pts_in_box
-
+            # ── Matched CFAR: same timestamp as this DL frame (1-to-1) ────────
+            pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+            if pts_c is not None and len(pts_c) and corners is not None:
+                pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
             cfar_frames.append({
-                'scores':            scores_c if scores_c is not None else np.zeros(0, dtype=np.float32),
-                'in_box':            in_box_c,
-                'pts_in_box_thresh': pts_c[in_box_c] if pts_c is not None and len(in_box_c) else np.empty((0, 3), dtype=np.float32),
-                'box_corners':       corners,
-                'lidar_pts':         lidar_pts_cfar,
-                'box_volume':        box_volume,
-                'box_range':         box_range,
+                'pts':         pts_c,
+                'scores':      scores_c,
+                'box_corners': corners,
+                'lidar_pts':   lidar_pts_in_box,
+                'box_volume':  box_volume,
+                'box_range':   box_range,
             })
+
+        # ── Extended CFAR: calib timestamps NOT covered by any DL frame ───────
+        # Provides metrics for 10-15m and 15-20m where DL has no labels.
+        if dl_ts_list:
+            dl_ts_arr   = np.array(dl_ts_list)
+            extra_calib = [f for f in calib_files
+                           if np.min(np.abs(dl_ts_arr - _extract_ts_ms(f))) > 200]
+        else:
+            extra_calib = calib_files
+        if extra_calib:
+            cfar_frames.extend(_collect_cfar_frames(rc_dir, sf, weather, extra_calib))
 
     return dl_frames, cfar_frames
 
@@ -854,11 +856,14 @@ def generate_camera_projection_plots(rc_folders, base_dir, config, model, device
     Frames are chosen equally spaced across all calib files so the full
     range band is represented, not just the prepared-dataset timestamps.
     """
-    import cv2
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
+
+    if cv2 is None:
+        print('  [SKIP] camera projection: cv2 not installed')
+        return
 
     sf         = config.get('subfolders', {})
     DL_COLOR   = (20,  255,  57)   # neon green  (BGR)
@@ -869,7 +874,9 @@ def generate_camera_projection_plots(rc_folders, base_dir, config, model, device
         rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
         calib_dir = os.path.join(rc_dir, sf.get('calib', 'calib'))
         cfar_dir  = os.path.join(rc_dir, sf.get('cfar',  'cfar'))
-        pco_dir   = os.path.join(rc_dir, sf.get('pco',   'pco'))
+        # pco_dir: top-level config key overrides subfolder default
+        pco_dir_override = config.get('pco_dir', '').strip()
+        pco_dir = pco_dir_override if pco_dir_override else os.path.join(rc_dir, sf.get('pco', 'pco'))
 
         calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
         if not calib_files:
@@ -888,9 +895,17 @@ def generate_camera_projection_plots(rc_folders, base_dir, config, model, device
             glob.glob(os.path.join(cfar_dir, '*.npy')) +
             glob.glob(os.path.join(cfar_dir, '*.txt')))
 
-        # Equally spaced across all calib files (not just prepared dataset)
-        idxs     = np.linspace(0, len(calib_files) - 1, n_plots, dtype=int)
-        selected = [calib_files[i] for i in idxs]
+        # Only use calib files that have a matching DL frame (within 100ms) so
+        # camera projection shows frames where DL prediction is available.
+        if len(power_ts) > 0:
+            dl_calib = [cf for cf in calib_files
+                        if np.min(np.abs(power_ts - _extract_ts_ms(cf))) <= 100]
+        else:
+            dl_calib = calib_files
+        if not dl_calib:
+            dl_calib = calib_files  # fallback: use all if nothing matched
+        idxs     = np.linspace(0, len(dl_calib) - 1, n_plots, dtype=int)
+        selected = [dl_calib[i] for i in idxs]
 
         rc_out = os.path.join(out_dir, 'camera_projection', rc_name)
         os.makedirs(rc_out, exist_ok=True)
@@ -991,7 +1006,8 @@ def generate_camera_projection_plots(rc_folders, base_dir, config, model, device
             print(f'    frame {fi+1}/{n_plots}  range={box_range:.1f}m  '
                   f'DL={n_dl}  CFAR={n_cfar}  -> {os.path.basename(out_path)}')
 
-        print(f'  {rc_name}: {n_plots} frames saved -> {rc_out}')
+        n_saved = len([f for f in os.listdir(rc_out) if f.endswith('.png')])
+        print(f'  {rc_name}: {n_saved}/{n_plots} frames saved -> {rc_out}')
 
 
 def generate_thesis_plots(rc_folders, base_dir, config, model, device,
