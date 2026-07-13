@@ -1177,7 +1177,7 @@ def run_weather(config, ckpt, out_dir):
             dl_m = compute_weather_metrics(dl_frames, threshold, weather)
             all_results[weather] = {'DL': dl_m}
 
-            if cfar_frames and any(f['pts'] is not None for f in cfar_frames):
+            if cfar_frames and any(len(f.get('scores', [])) > 0 or f.get('pts') is not None for f in cfar_frames):
                 cfar_m = compute_weather_metrics(cfar_frames, 0.5, weather)
                 all_results[weather]['CFAR'] = cfar_m
 
