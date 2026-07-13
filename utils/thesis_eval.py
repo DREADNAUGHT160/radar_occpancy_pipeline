@@ -891,10 +891,24 @@ def generate_camera_projection_plots(rc_folders, base_dir, config, model, device
             di = int(np.argmin(np.abs(power_ts - ts_ms)))
             if abs(power_ts[di] - ts_ms) <= 100:
                 radar_tensor, _ = ds[di]
-                with torch.no_grad():
-                    pred_np = torch.sigmoid(
-                        model(radar_tensor.unsqueeze(0).to(device))
-                    )[0].cpu().numpy()
+                try:
+                    with torch.no_grad():
+                        pred_np = torch.sigmoid(
+                            model(radar_tensor.unsqueeze(0).to(device))
+                        )[0].cpu().numpy()
+                except RuntimeError as e:
+                    if 'out of memory' in str(e).lower():
+                        torch.cuda.empty_cache()
+                        with torch.no_grad():
+                            pred_np = torch.sigmoid(
+                                model(radar_tensor.unsqueeze(0).cpu())
+                            )[0].numpy()
+                    else:
+                        raise
+                finally:
+                    del radar_tensor
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 pts_dl, _ = occupancy_to_points(pred_np, threshold)
                 if len(pts_dl) > 0:
                     pts_dl_l = (pts_dl + t_r2l).astype(np.float64)

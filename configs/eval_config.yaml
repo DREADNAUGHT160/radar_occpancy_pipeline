@@ -102,7 +102,7 @@ thesis_plots:
   # Set camera_projection: true to generate 2-panel DL-vs-CFAR camera overlay figures.
   # Requires pco/ and calib/ subfolders in each RC folder (standard prepared dataset layout).
   # Output: <out_dir>/camera_projection/<rc_name>/frame_NN_rangeX.Xm.png
-  camera_projection: false
+  camera_projection: true
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
