@@ -16,7 +16,7 @@ base_dir: 'D:/dataset'
 
 raw_data_dir: ''
 cfar_src_subfolder: 'data/radar'
-saveroad_dir: ''
+saveroad_dir: 'D:/thesis data/SAVEROAD_DataLoader_main'
 
 subfolders:
   rad_power: rad_power
