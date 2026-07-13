@@ -27,6 +27,7 @@ import h5py
 from tqdm import tqdm
 
 # ── Grid parameters — must match model config ─────────────────────────────────
+# Defaults; overridden at runtime by --height_bins / --grid_r_bins / --grid_a_bins
 GRID_R_BINS     = 256
 GRID_A_BINS     = 256
 MAX_RANGE_M     = 25.6
@@ -149,13 +150,28 @@ def main():
     parser.add_argument('--sync_threshold', type=int, default=100,
                         help='Maximum timestamp delta accepted as a match (ms). '
                              'Set to 0 to disable threshold — always assigns nearest LiDAR frame.')
+    parser.add_argument('--height_bins',    type=int, default=64,
+                        help='Number of height bins in the occupancy grid (default 64). '
+                             'Use 128 for higher vertical resolution. '
+                             'Must match model num_classes in train config.')
+    parser.add_argument('--grid_r_bins',    type=int, default=256,
+                        help='Range bins (default 256, must match radar cube spatial size).')
+    parser.add_argument('--grid_a_bins',    type=int, default=256,
+                        help='Azimuth bins (default 256, must match radar cube spatial size).')
     args = parser.parse_args()
+
+    # Override module-level grid constants from CLI args
+    global NUM_HEIGHT_BINS, GRID_R_BINS, GRID_A_BINS
+    NUM_HEIGHT_BINS = args.height_bins
+    GRID_R_BINS     = args.grid_r_bins
+    GRID_A_BINS     = args.grid_a_bins
 
     os.makedirs(args.out_dir, exist_ok=True)
 
     radar_files = sorted(glob.glob(os.path.join(args.radar_npy_dir, 'rad_power', '*.npy')))
     lidar_files = sorted(glob.glob(os.path.join(args.lidar_pcd_dir, '*.h5')))
 
+    print(f"Grid         : {NUM_HEIGHT_BINS}h × {GRID_R_BINS}r × {GRID_A_BINS}a")
     print(f"Radar frames : {len(radar_files)}")
     print(f"LiDAR frames : {len(lidar_files)}")
 
