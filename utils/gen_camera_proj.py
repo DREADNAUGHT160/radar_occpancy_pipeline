@@ -15,9 +15,14 @@ Usage:
 Output: <out_dir>/camera_projection/<rc_name>/frame_NN_rangeX.Xm.png
         where out_dir comes from the config file.
 
+Camera images (pco):
+  By default, pco/ is looked up at <base_dir>/<RC>/pco.
+  Override with a top-level pco_dir key in the config yaml, e.g.:
+    pco_dir: 'D:/SAVEROAD_DataLoader_main/18_RC019/data/pco'
+
 Requirements:
-  - pco/ subfolder must exist inside each RC folder in the prepared dataset
-  - calib/ and cfar/ subfolders must also exist (standard dataset layout)
+  - calib/ and cfar/ subfolders must exist in each RC folder
+  - pco/ images accessible via pco_dir config key or default path
 """
 import os
 import sys
@@ -43,10 +48,15 @@ def main():
                         help='Number of frames per RC folder (overrides config)')
     parser.add_argument('--rc',         nargs='+', default=None,
                         help='Process only these RC folders, e.g. --rc RC019 RC031')
+    parser.add_argument('--pco_dir',    default=None,
+                        help='Path to PCO camera image folder (overrides pco_dir in config)')
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
+
+    if args.pco_dir:
+        config['pco_dir'] = args.pco_dir
 
     ckpt = args.checkpoint or config.get('checkpoint', '')
     if not ckpt or not os.path.exists(ckpt):
@@ -78,9 +88,11 @@ def main():
     print(f"Device: {device}")
     model  = _load_model(config, ckpt, device)
 
+    pco_dir_info = config.get('pco_dir', '<default: <RC>/pco>')
     print(f"\nRC folders : {all_rc}")
     print(f"Frames/RC  : {n_plots}")
     print(f"Threshold  : {threshold}")
+    print(f"PCO dir    : {pco_dir_info}")
     print(f"Output dir : {os.path.abspath(out_dir)}/camera_projection/")
     print("=" * 60)
 
