@@ -501,23 +501,26 @@ def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
 def collect_frames(rc_folders, base_dir, config, model, device, threshold, weather):
     """Return (dl_frames, cfar_frames) for all RC folders.
 
-    DL frames: one per prepared-dataset frame (matched by dataset timestamps).
-    CFAR frames: one per calib file (independent timestamps — covers all range
-    bands including frames without matching prepared-dataset entries).
+    Both DL and CFAR are evaluated on the same set of frames (DL dataset
+    timestamps) so that n_frames is identical for a fair comparison.
+    For each DL frame, the nearest CFAR file within 200 ms is used.
     """
-    sf         = config.get('subfolders', {})
-    dl_frames  = []
+    sf          = config.get('subfolders', {})
+    dl_frames   = []
     cfar_frames = []
 
     for rc_name in rc_folders:
         rc_dir    = os.path.join(base_dir, rc_name) if base_dir else rc_name
         calib_dir = os.path.join(rc_dir, sf.get('calib', 'calib'))
+        cfar_dir  = os.path.join(rc_dir, sf.get('cfar',  'cfar'))
 
         calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
         txt_ts      = np.array([_extract_ts_ms(f) for f in calib_files]) if calib_files else np.array([])
 
-        # ── CFAR frames: independent loop over all calib files ────────────────
-        cfar_frames.extend(_collect_cfar_frames(rc_dir, sf, weather, calib_files))
+        # Pre-index CFAR files for fast timestamp lookup
+        cfar_files = sorted(glob.glob(os.path.join(cfar_dir, '*.txt')) +
+                            glob.glob(os.path.join(cfar_dir, '*.npy')))
+        cfar_ts    = np.array([_extract_ts_ms(f) for f in cfar_files]) if cfar_files else np.array([])
 
         # ── DL frames: one per prepared-dataset frame ─────────────────────────
         try:
@@ -568,6 +571,33 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                 'pts_in_box_thresh': pts_in_thresh,
                 'box_corners':       corners,
                 'lidar_pts':         lidar_pts_in_box,
+                'box_volume':        box_volume,
+                'box_range':         box_range,
+            })
+
+            # ── CFAR frame at the same timestamp (1-to-1 with DL) ────────────
+            pts_c, scores_c = None, None
+            if len(cfar_ts) > 0:
+                ci = int(np.argmin(np.abs(cfar_ts - ts_ms)))
+                if abs(cfar_ts[ci] - ts_ms) <= 200:
+                    pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+                    if pts_c is not None and len(pts_c) and corners is not None:
+                        pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
+
+            in_box_c = np.zeros(0, dtype=bool)
+            if pts_c is not None and corners is not None and len(pts_c):
+                in_box_c = points_in_box(pts_c, corners)
+
+            lidar_pts_cfar = None
+            if weather == 'clear' and corners is not None:
+                lidar_pts_cfar = lidar_pts_in_box
+
+            cfar_frames.append({
+                'scores':            scores_c if scores_c is not None else np.zeros(0, dtype=np.float32),
+                'in_box':            in_box_c,
+                'pts_in_box_thresh': pts_c[in_box_c] if pts_c is not None and len(in_box_c) else np.empty((0, 3), dtype=np.float32),
+                'box_corners':       corners,
+                'lidar_pts':         lidar_pts_cfar,
                 'box_volume':        box_volume,
                 'box_range':         box_range,
             })
