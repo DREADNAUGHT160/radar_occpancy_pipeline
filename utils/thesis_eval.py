@@ -93,14 +93,16 @@ def _parse_calib_file(txt_path):
 
 
 def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
-    """Return (corners, t_r2l, R_r2l) for nearest calib within threshold, else (None, zeros, eye)."""
+    """Return (corners, t_r2l, R_r2l, calib_delta_ms) for nearest calib within
+    threshold, else (None, zeros, eye, actual_delta_ms_or_None)."""
     if len(txt_ts) == 0:
-        return None, np.zeros(3), np.eye(3)
+        return None, np.zeros(3), np.eye(3), None
     diffs = np.abs(txt_ts - ts_ms)
     best  = int(np.argmin(diffs))
     if diffs[best] > threshold_ms:
-        return None, np.zeros(3), np.eye(3)
-    return _parse_calib_file(txt_files[best])
+        return None, np.zeros(3), np.eye(3), int(diffs[best])
+    corners, t_r2l, R_r2l = _parse_calib_file(txt_files[best])
+    return corners, t_r2l, R_r2l, int(diffs[best])
 
 
 def _cfar_to_lidar(pts, R_r2l, t_r2l):
@@ -332,10 +334,12 @@ def compute_ap(frames_data):
     prec   = tp_cum / (tp_cum + fp_cum + 1e-8)
     rec    = tp_cum / in_box_arr.sum()
 
-    try:
-        return float(np.trapezoid(prec, rec))
-    except AttributeError:
-        return float(np.trapz(prec, rec))
+    # Step-function AP (sklearn/PASCAL VOC/COCO definition): AP = sum((R_n - R_{n-1}) * P_n).
+    # Trapezoidal integration is NOT standard here -- it linearly interpolates precision
+    # between ranked points, which invents precision values never actually achieved and
+    # is a materially different (and biased) number from the conventional AP.
+    rec_prev = np.concatenate(([0.0], rec[:-1]))
+    return float(np.sum((rec - rec_prev) * prec))
 
 
 def compute_pd_pfa(frames_data, threshold):
@@ -513,14 +517,15 @@ def _range_band(r):
 
 
 def collect_frames(rc_folders, base_dir, config, model, device, threshold, weather):
-    """Return (dl_frames, cfar_frames, match_log) for all RC folders.
+    """Return (dl_frames, cfar_matched, cfar_extended, match_log) for all RC folders.
 
     DL frames: one per prepared-dataset frame (synced radar+LiDAR).
     CFAR frames use a hybrid approach:
-      - Matched: one CFAR per DL frame at the same timestamp — ensures fair
-        per-band comparison for the 0-5m and 5-10m bands.
-      - Extended: remaining calib frames not covered by any DL timestamp —
-        adds the 10-15m and 15-20m bands where DL has no labels.
+      - cfar_matched: one CFAR per DL frame at the same timestamp (1-to-1).
+        Used for overall AP/P_d/P_fa/CD — same frame pool as DL, fair comparison.
+      - cfar_extended: remaining calib frames not covered by any DL timestamp.
+        Combined with matched for per-band metrics + density only, adding the
+        10-15m and 15-20m bands where DL has no labels.
 
     match_log: list of dicts, one per CFAR frame, recording the matching
     details. Written to frame_match_log.csv by run_weather.
@@ -561,7 +566,7 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             ts_ms  = _extract_ts_ms(sample['power'])
             dl_ts_list.append(ts_ms)
 
-            corners, r2l, R_r2l = _find_calib(calib_files, txt_ts, ts_ms)
+            corners, r2l, R_r2l, calib_delta_ms = _find_calib(calib_files, txt_ts, ts_ms)
             box_volume, box_range = _box_stats(corners) if corners is not None else (0.0, np.nan)
 
             with torch.no_grad():
@@ -622,14 +627,15 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                     cfar_ts_matched = cfar_ts[ci]
                     delta_ms        = abs(cfar_ts[ci] - ts_ms)
             match_log.append({
-                'rc':           rc_name,
-                'type':         'matched',
-                'dl_ts_ms':     ts_ms,
-                'cfar_ts_ms':   cfar_ts_matched,
-                'delta_ms':     delta_ms,
-                'cfar_found':   cfar_found,
-                'box_range_m':  f'{box_range:.2f}' if not np.isnan(box_range) else '',
-                'band':         _range_band(box_range),
+                'rc':              rc_name,
+                'type':            'matched',
+                'dl_ts_ms':        ts_ms,
+                'cfar_ts_ms':      cfar_ts_matched,
+                'delta_ms':        delta_ms,
+                'calib_delta_ms':  calib_delta_ms if calib_delta_ms is not None else '',
+                'cfar_found':      cfar_found,
+                'box_range_m':     f'{box_range:.2f}' if not np.isnan(box_range) else '',
+                'band':            _range_band(box_range),
             })
 
         # ── Extended CFAR: calib timestamps NOT covered by any DL frame ───────
@@ -657,14 +663,15 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                         delta_ext   = abs(cfar_ts[ci] - calib_ts_ms)
                 br = ef.get('box_range', float('nan'))
                 match_log.append({
-                    'rc':           rc_name,
-                    'type':         'extended',
-                    'dl_ts_ms':     '',
-                    'cfar_ts_ms':   cfar_ts_ext,
-                    'delta_ms':     delta_ext,
-                    'cfar_found':   cfar_found_ext,
-                    'box_range_m':  f'{br:.2f}' if not np.isnan(br) else '',
-                    'band':         _range_band(br),
+                    'rc':              rc_name,
+                    'type':            'extended',
+                    'dl_ts_ms':        '',
+                    'cfar_ts_ms':      cfar_ts_ext,
+                    'delta_ms':        delta_ext,
+                    'calib_delta_ms':  0,  # box comes from this same calib file — always exact
+                    'cfar_found':      cfar_found_ext,
+                    'box_range_m':     f'{br:.2f}' if not np.isnan(br) else '',
+                    'band':            _range_band(br),
                 })
 
     return dl_frames, cfar_matched, cfar_extended, match_log
@@ -1399,7 +1406,7 @@ def run_weather(config, ckpt, out_dir):
         if all_match_logs:
             log_csv = os.path.join(out_dir, 'frame_match_log.csv')
             log_fields = ['rc', 'type', 'dl_ts_ms', 'cfar_ts_ms',
-                          'delta_ms', 'cfar_found', 'box_range_m', 'band']
+                          'delta_ms', 'calib_delta_ms', 'cfar_found', 'box_range_m', 'band']
             with open(log_csv, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=log_fields)
                 writer.writeheader()
@@ -1409,6 +1416,25 @@ def run_weather(config, ckpt, out_dir):
             extended_n = sum(1 for r in all_match_logs if r['type'] == 'extended')
             found_n    = sum(1 for r in all_match_logs if r['cfar_found'])
             print(f"  matched={matched_n}  extended={extended_n}  cfar_found={found_n}/{matched_n+extended_n}")
+
+            has_box   = [r for r in all_match_logs if r['type'] == 'matched' and r['band'] != 'unknown']
+            no_box    = [r for r in all_match_logs if r['type'] == 'matched' and r['band'] == 'unknown']
+            if no_box:
+                miss_deltas = [r['calib_delta_ms'] for r in no_box if r['calib_delta_ms'] != '']
+                miss_range  = f" (calib gap {min(miss_deltas)}-{max(miss_deltas)}ms)" if miss_deltas else ""
+                print(f"  [WARN] {len(no_box)}/{matched_n} matched DL frames have no calib match "
+                      f"within 100ms — excluded from all metrics (band=unknown){miss_range}")
+
+            cdeltas = [r['calib_delta_ms'] for r in has_box if r['calib_delta_ms'] != '']
+            ddeltas = [r['delta_ms'] for r in all_match_logs if r['delta_ms'] != '']
+            if cdeltas:
+                print(f"  calib<->DL sync (frames with a box):  n={len(cdeltas)}  "
+                      f"min={min(cdeltas)}ms  max={max(cdeltas)}ms  "
+                      f"mean={sum(cdeltas)/len(cdeltas):.1f}ms")
+            if ddeltas:
+                print(f"  CFAR<->anchor sync (all logged rows): n={len(ddeltas)}  "
+                      f"min={min(ddeltas)}ms  max={max(ddeltas)}ms  "
+                      f"mean={sum(ddeltas)/len(ddeltas):.1f}ms")
 
     # -- Thesis figures --------------------------------------------------------
     tp_cfg         = config.get('thesis_plots', {})
