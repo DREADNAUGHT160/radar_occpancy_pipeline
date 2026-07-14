@@ -77,7 +77,12 @@ def _load_model(config, ckpt, device):
 
 
 def _parse_calib_file(txt_path):
-    """Parse one calib .txt → (corners, t_r2l, R_r2l). corners=None if no BoundingBox."""
+    """Parse one calib .txt → (corners, t_r2l, R_r2l, radar_frame_ts_ms).
+    corners=None if no BoundingBox. radar_frame_ts_ms=None if no Radar_frame field.
+
+    Radar_frame is an exact filename reference (e.g. "1649675876389.txt") to the
+    CFAR/raw-radar file this annotation was built against -- verified against
+    RC019 to be a guaranteed-correct link, not a nearest-timestamp guess."""
     with open(txt_path) as f:
         content = f.read()
     match   = re.search(r'"BoundingBox":([\d\s.-]+),', content)
@@ -89,20 +94,22 @@ def _parse_calib_file(txt_path):
         vals = np.array(m.group(1).strip().split(), dtype=float)
         if len(vals) == 9:
             R_r2l = vals.reshape(3, 3)
-    return corners, r2l, R_r2l
+    rf_match = re.search(r'"Radar_frame":"([^"]+)"', content)
+    radar_frame_ts = _extract_ts_ms(rf_match.group(1)) if rf_match else None
+    return corners, r2l, R_r2l, radar_frame_ts
 
 
 def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
-    """Return (corners, t_r2l, R_r2l, calib_delta_ms) for nearest calib within
-    threshold, else (None, zeros, eye, actual_delta_ms_or_None)."""
+    """Return (corners, t_r2l, R_r2l, calib_delta_ms, radar_frame_ts_ms) for nearest
+    calib within threshold, else (None, zeros, eye, actual_delta_ms_or_None, None)."""
     if len(txt_ts) == 0:
-        return None, np.zeros(3), np.eye(3), None
+        return None, np.zeros(3), np.eye(3), None, None
     diffs = np.abs(txt_ts - ts_ms)
     best  = int(np.argmin(diffs))
     if diffs[best] > threshold_ms:
-        return None, np.zeros(3), np.eye(3), int(diffs[best])
-    corners, t_r2l, R_r2l = _parse_calib_file(txt_files[best])
-    return corners, t_r2l, R_r2l, int(diffs[best])
+        return None, np.zeros(3), np.eye(3), int(diffs[best]), None
+    corners, t_r2l, R_r2l, radar_frame_ts = _parse_calib_file(txt_files[best])
+    return corners, t_r2l, R_r2l, int(diffs[best]), radar_frame_ts
 
 
 def _cfar_to_lidar(pts, R_r2l, t_r2l):
@@ -475,8 +482,13 @@ def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
     frames = []
     for cf in calib_files:
         ts_ms = _extract_ts_ms(cf)
-        corners, r2l, R_r2l = _parse_calib_file(cf)
+        corners, r2l, R_r2l, radar_frame_ts = _parse_calib_file(cf)
         if corners is None:
+            # Keep the list aligned 1:1 with calib_files (caller zips them) --
+            # metric functions already skip frames with box_corners=None.
+            frames.append({'pts': None, 'scores': None, 'box_corners': None,
+                            'lidar_pts': None, 'box_volume': 0.0, 'box_range': np.nan,
+                            'cfar_method': 'no_box'})
             continue
         box_volume, box_range = _box_stats(corners)
 
@@ -491,8 +503,13 @@ def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
                 if len(lbl_pts) > 0:
                     lidar_pts_in_box = lbl_pts[points_in_box(lbl_pts, corners)]
 
-        # Load CFAR: Doppler-filtered, binary scores, full coordinate transform
-        pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+        # Load CFAR: prefer the exact Radar_frame reference over nearest-timestamp.
+        if radar_frame_ts is not None:
+            pts_c, scores_c = _load_cfar(cfar_dir, radar_frame_ts, threshold_ms=5)
+            cfar_method = 'exact_radar_frame'
+        else:
+            pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+            cfar_method = 'nearest_calib_ts'
         if pts_c is not None and len(pts_c):
             pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
 
@@ -503,6 +520,7 @@ def _collect_cfar_frames(rc_dir, sf, weather, calib_files):
             'lidar_pts':   lidar_pts_in_box,
             'box_volume':  box_volume,
             'box_range':   box_range,
+            'cfar_method': cfar_method,
         })
     return frames
 
@@ -566,7 +584,7 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             ts_ms  = _extract_ts_ms(sample['power'])
             dl_ts_list.append(ts_ms)
 
-            corners, r2l, R_r2l, calib_delta_ms = _find_calib(calib_files, txt_ts, ts_ms)
+            corners, r2l, R_r2l, calib_delta_ms, radar_frame_ts = _find_calib(calib_files, txt_ts, ts_ms)
             box_volume, box_range = _box_stats(corners) if corners is not None else (0.0, np.nan)
 
             with torch.no_grad():
@@ -604,8 +622,20 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                 'box_range':         box_range,
             })
 
-            # ── Matched CFAR: same timestamp as this DL frame (1-to-1) ────────
-            pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+            # ── Matched CFAR ────────────────────────────────────────────────
+            # Prefer the exact Radar_frame reference from the matched calib file
+            # (verified against RC019: nearest-timestamp-to-DL picked a DIFFERENT
+            # CFAR file than Radar_frame in 55/55 checked cases, off by 60-93ms --
+            # a systematic offset between the DL/prepared timestamp stream and the
+            # raw radar/CFAR stream). Fall back to nearest-DL-timestamp only when
+            # no calib match (and therefore no Radar_frame) exists at all.
+            cfar_method = 'exact_radar_frame' if radar_frame_ts is not None else 'nearest_dl_ts'
+            if radar_frame_ts is not None:
+                pts_c, scores_c = _load_cfar(cfar_dir, radar_frame_ts, threshold_ms=5)
+                anchor_ts = radar_frame_ts
+            else:
+                pts_c, scores_c = _load_cfar(cfar_dir, ts_ms)
+                anchor_ts = ts_ms
             cfar_found = pts_c is not None and len(pts_c) > 0
             if cfar_found and corners is not None:
                 pts_c = _cfar_to_lidar(pts_c, R_r2l, r2l)
@@ -622,10 +652,10 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             cfar_ts_matched = ''
             delta_ms        = ''
             if len(cfar_ts) > 0:
-                ci = int(np.argmin(np.abs(cfar_ts - ts_ms)))
-                if abs(cfar_ts[ci] - ts_ms) <= 200:
+                ci = int(np.argmin(np.abs(cfar_ts - anchor_ts)))
+                if abs(cfar_ts[ci] - anchor_ts) <= (5 if radar_frame_ts is not None else 200):
                     cfar_ts_matched = cfar_ts[ci]
-                    delta_ms        = abs(cfar_ts[ci] - ts_ms)
+                    delta_ms        = abs(cfar_ts[ci] - anchor_ts)
             match_log.append({
                 'rc':              rc_name,
                 'type':            'matched',
@@ -633,6 +663,7 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                 'cfar_ts_ms':      cfar_ts_matched,
                 'delta_ms':        delta_ms,
                 'calib_delta_ms':  calib_delta_ms if calib_delta_ms is not None else '',
+                'cfar_method':     cfar_method,
                 'cfar_found':      cfar_found,
                 'box_range_m':     f'{box_range:.2f}' if not np.isnan(box_range) else '',
                 'band':            _range_band(box_range),
@@ -669,6 +700,7 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
                     'cfar_ts_ms':      cfar_ts_ext,
                     'delta_ms':        delta_ext,
                     'calib_delta_ms':  0,  # box comes from this same calib file — always exact
+                    'cfar_method':     ef.get('cfar_method', ''),
                     'cfar_found':      cfar_found_ext,
                     'box_range_m':     f'{br:.2f}' if not np.isnan(br) else '',
                     'band':            _range_band(br),
@@ -1406,7 +1438,8 @@ def run_weather(config, ckpt, out_dir):
         if all_match_logs:
             log_csv = os.path.join(out_dir, 'frame_match_log.csv')
             log_fields = ['rc', 'type', 'dl_ts_ms', 'cfar_ts_ms',
-                          'delta_ms', 'calib_delta_ms', 'cfar_found', 'box_range_m', 'band']
+                          'delta_ms', 'calib_delta_ms', 'cfar_method', 'cfar_found',
+                          'box_range_m', 'band']
             with open(log_csv, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=log_fields)
                 writer.writeheader()
