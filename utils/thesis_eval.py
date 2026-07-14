@@ -112,6 +112,51 @@ def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
     return corners, t_r2l, R_r2l, int(diffs[best]), radar_frame_ts
 
 
+def _build_calib_index(calib_files):
+    """Pre-parse every calib file once. Returns a dict of arrays for fast lookup."""
+    corners_l, t_r2l_l, R_r2l_l, rf_ts_l = [], [], [], []
+    for f in calib_files:
+        corners, t_r2l, R_r2l, rf_ts = _parse_calib_file(f)
+        corners_l.append(corners)
+        t_r2l_l.append(t_r2l)
+        R_r2l_l.append(R_r2l)
+        rf_ts_l.append(rf_ts if rf_ts is not None else np.nan)
+    return {
+        'corners': corners_l, 't_r2l': t_r2l_l, 'R_r2l': R_r2l_l,
+        'radar_frame_ts': np.array(rf_ts_l, dtype=float),
+    }
+
+
+def _find_calib_by_radar_frame(calib_index, ts_ms, threshold_ms=100):
+    """Match a DL timestamp against calib files' Radar_frame timestamp (the raw
+    radar/CFAR clock) rather than the calib file's own filename timestamp.
+
+    Verified on RC019 this gives a much tighter DL<->CFAR alignment than matching
+    against calib's own filename and then following Radar_frame afterward:
+    mean gap 16ms (max 72ms) vs mean 94.5ms (max 195ms) for the filename-first
+    approach, at the cost of slightly fewer frames getting a box match at all
+    (51/109 vs 55/109 on RC019) because Radar_frame values are sparser/offset.
+
+    Returns (corners, t_r2l, R_r2l, gap_ms, radar_frame_ts_ms), or
+    (None, zeros, eye, None, None) if no calib has a Radar_frame within threshold.
+    """
+    rf_ts = calib_index['radar_frame_ts']
+    valid = ~np.isnan(rf_ts)
+    if not valid.any():
+        return None, np.zeros(3), np.eye(3), None, None
+    valid_idx = np.where(valid)[0]
+    diffs = np.abs(rf_ts[valid_idx] - ts_ms)
+    best_i = int(np.argmin(diffs))
+    gap    = float(diffs[best_i])
+    if gap > threshold_ms:
+        return None, np.zeros(3), np.eye(3), gap, None
+    idx = valid_idx[best_i]
+    corners = calib_index['corners'][idx]
+    if corners is None:
+        return None, np.zeros(3), np.eye(3), gap, None
+    return corners, calib_index['t_r2l'][idx], calib_index['R_r2l'][idx], gap, rf_ts[idx]
+
+
 def _cfar_to_lidar(pts, R_r2l, t_r2l):
     """Transform raw SAVEROAD CFAR points to LiDAR frame.
     Matches cfar_all_frames.py: flip X then apply inverse of Radar_to_Lidar."""
@@ -561,6 +606,7 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
 
         calib_files = sorted(glob.glob(os.path.join(calib_dir, '*.txt')))
         txt_ts      = np.array([_extract_ts_ms(f) for f in calib_files]) if calib_files else np.array([])
+        calib_index = _build_calib_index(calib_files)
 
         # Pre-index CFAR timestamps for delta calculation in the log
         cfar_files = sorted(glob.glob(os.path.join(cfar_dir, '*.txt')) +
@@ -584,7 +630,11 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
             ts_ms  = _extract_ts_ms(sample['power'])
             dl_ts_list.append(ts_ms)
 
-            corners, r2l, R_r2l, calib_delta_ms, radar_frame_ts = _find_calib(calib_files, txt_ts, ts_ms)
+            # Match by Radar_frame (raw radar/CFAR clock) rather than calib's own
+            # filename timestamp -- verified tighter DL<->CFAR alignment (mean 16ms
+            # vs 94.5ms) at the cost of slightly fewer frames getting a box at all.
+            corners, r2l, R_r2l, calib_delta_ms, radar_frame_ts = _find_calib_by_radar_frame(
+                calib_index, ts_ms)
             box_volume, box_range = _box_stats(corners) if corners is not None else (0.0, np.nan)
 
             with torch.no_grad():
