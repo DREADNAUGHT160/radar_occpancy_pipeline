@@ -585,10 +585,12 @@ def collect_frames(rc_folders, base_dir, config, model, device, threshold, weath
     DL frames: one per prepared-dataset frame (synced radar+LiDAR).
     CFAR frames use a hybrid approach:
       - cfar_matched: one CFAR per DL frame at the same timestamp (1-to-1).
-        Used for overall AP/P_d/P_fa/CD — same frame pool as DL, fair comparison.
+        Used for ALL weather_results.csv metrics (overall AND per-band AP/P_d/
+        P_fa/CD/density) — same frame pool as DL, band-for-band, so DL band=X
+        and CFAR band=X always report the same n_frames.
       - cfar_extended: remaining calib frames not covered by any DL timestamp.
-        Combined with matched for per-band metrics + density only, adding the
-        10-15m and 15-20m bands where DL has no labels.
+        Not used in weather_results.csv; kept only for audit/coverage visibility
+        in frame_match_log.csv (type='extended' rows).
 
     match_log: list of dicts, one per CFAR frame, recording the matching
     details. Written to frame_match_log.csv by run_weather.
@@ -1363,13 +1365,12 @@ def run_weather(config, ckpt, out_dir):
 
             if cfar_matched and any(len(f.get('scores', [])) > 0 or f.get('pts') is not None
                                     for f in cfar_matched):
-                # Overall AP/P_d/P_fa/CD: matched frames only (same pool as DL — fair comparison)
+                # Overall AND per-band AP/P_d/P_fa/CD/density: matched frames only.
+                # Same frame pool as DL band-for-band (cfar_extended is intentionally
+                # excluded here so DL band=X and CFAR band=X always report the same
+                # n_frames -- cfar_extended remains available in frame_match_log.csv
+                # for audit/coverage purposes but no longer feeds this table).
                 cfar_m = compute_weather_metrics(cfar_matched, 0.5, weather)
-                # Per-band metrics + density: all frames (matched + extended) for range coverage
-                if cfar_extended:
-                    cfar_all = compute_weather_metrics(cfar_matched + cfar_extended, 0.5, weather)
-                    cfar_m['range_metrics'] = cfar_all['range_metrics']
-                    cfar_m['density']       = cfar_all['density']
                 all_results[weather]['CFAR'] = cfar_m
 
     if all_results:
