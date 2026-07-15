@@ -826,16 +826,22 @@ def _save_pred_plot(rc_name, ts_str, frame_idx,
 
     xt  = np.linspace(0, 255, 7)
     xl  = np.round(np.degrees(np.arcsin(np.linspace(-1, 1, 7)))).astype(int)
+    # AE map elevation axis: num_e=64 bins, linear over +-elevation_max_angle (default 45 deg)
+    # -- matches _compute_ae_re_maps' e_bins formula: bin = (e_norm+1)/2 * (num_e-1)
+    yt_e = np.linspace(0, 63, 5)
+    yl_e = np.round(np.linspace(-45, 45, 5)).astype(int)
 
     fig = plt.figure(figsize=(18, 12))
     gs  = fig.add_gridspec(3, 3, hspace=0.38, wspace=0.32)
 
-    def _ishow(ax, data, title, cmap, xlabel, ylabel, vmin=0, vmax=1, az_ticks=False):
+    def _ishow(ax, data, title, cmap, xlabel, ylabel, vmin=0, vmax=1, az_ticks=False, elev_ticks=False):
         im = ax.imshow(data, cmap=cmap, origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
         ax.set_title(title, fontsize=10)
         ax.set_xlabel(xlabel, fontsize=8); ax.set_ylabel(ylabel, fontsize=8)
         if az_ticks:
             ax.set_xticks(xt); ax.set_xticklabels(xl, fontsize=7)
+        if elev_ticks:
+            ax.set_yticks(yt_e); ax.set_yticklabels(yl_e, fontsize=7)
         plt.colorbar(im, ax=ax)
         return im
 
@@ -846,7 +852,7 @@ def _save_pred_plot(rc_name, ts_str, frame_idx,
            'Input: Power BEV',  'turbo', 'Azimuth (deg)', 'Range (Bins)', vmin=0, vmax=bev_max, az_ticks=True)
     ae_max = float(ae_map.max()) if ae_map.max() > 0 else 1.0
     _ishow(fig.add_subplot(gs[0, 1]), ae_map,
-           'Input: AE Map',     'turbo', 'Azimuth (deg)', 'Elevation (Bins)', vmin=0, vmax=ae_max, az_ticks=True)
+           'Input: AE Map',     'turbo', 'Azimuth (deg)', 'Elevation (deg)', vmin=0, vmax=ae_max, az_ticks=True, elev_ticks=True)
     re_max = float(re_map.max()) if re_map.max() > 0 else 1.0
     _ishow(fig.add_subplot(gs[0, 2]), re_map,
            'Input: RE Map',     'turbo', 'Range (Bins)',  'Elevation (Bins)', vmin=0, vmax=re_max)
@@ -1363,8 +1369,10 @@ def run_weather(config, ckpt, out_dir):
             dl_m = compute_weather_metrics(dl_frames, threshold, weather)
             all_results[weather] = {'DL': dl_m}
 
-            if cfar_matched and any(len(f.get('scores', [])) > 0 or f.get('pts') is not None
-                                    for f in cfar_matched):
+            if cfar_matched and any(
+                    (f.get('scores') is not None and np.asarray(f['scores']).size > 0)
+                    or f.get('pts') is not None
+                    for f in cfar_matched):
                 # Overall AND per-band AP/P_d/P_fa/CD/density: matched frames only.
                 # Same frame pool as DL band-for-band (cfar_extended is intentionally
                 # excluded here so DL band=X and CFAR band=X always report the same
