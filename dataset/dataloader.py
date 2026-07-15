@@ -33,22 +33,51 @@ class RadarDataset(Dataset):
         sf = (config or {}).get('dataset', {}).get('subfolders', {})
         raw_power_dir    = os.path.join(radar_dir, sf.get('rad_power', 'rad_power'))
         pooled_power_dir = os.path.join(radar_dir, 'rad_power_pooled')
+        raw_elev_dir     = os.path.join(radar_dir, sf.get('rad_elev', 'rad_elev'))
+        pooled_elev_dir  = os.path.join(radar_dir, 'rad_elev_pooled')
+        argmax_elev_dir  = os.path.join(radar_dir, 'rad_elev_argmax')
 
-        # Use pre-pooled folder if it exists — skips runtime Doppler downsampling
-        if os.path.isdir(pooled_power_dir) and \
-                len(glob.glob(os.path.join(pooled_power_dir, '*.npy'))) > 0:
+        def _has_npy(d):
+            return os.path.isdir(d) and len(glob.glob(os.path.join(d, '*.npy'))) > 0
+
+        _has_pooled_power = _has_npy(pooled_power_dir)
+        _has_raw_power    = _has_npy(raw_power_dir)
+        _has_argmax_elev  = _has_npy(argmax_elev_dir)
+        _has_pooled_elev  = _has_npy(pooled_elev_dir)
+        _has_raw_elev     = _has_npy(raw_elev_dir)
+
+        elev_pool_cfg = (config or {}).get('model', {}).get('elev_pool', 'argmax_gather')
+        # Elevation is an angle, not a magnitude -- max-pooling it independently of power
+        # picks whichever Doppler bin has the numerically largest angle, not the angle at
+        # the actual detection. argmax_gather instead reads elevation from the same Doppler
+        # bin where POWER is maximal, keeping the two channels physically consistent.
+        self.argmax_gather_live = False
+
+        if elev_pool_cfg == 'argmax_gather' and _has_argmax_elev:
+            # Fast path: precomputed rad_elev_argmax/ folder available.
+            self.elev_dir       = argmax_elev_dir
+            self.power_dir      = pooled_power_dir if _has_pooled_power else raw_power_dir
+            self.doppler_pooled = _has_pooled_power
+        elif elev_pool_cfg == 'argmax_gather' and _has_raw_power and _has_raw_elev:
+            # Live path: no precomputed folder, but raw 512-bin data is available --
+            # compute argmax-gather per-frame in __getitem__.
+            self.elev_dir           = raw_elev_dir
+            self.power_dir          = raw_power_dir
+            self.doppler_pooled     = False
+            self.argmax_gather_live = True
+        elif _has_pooled_power:
             self.power_dir      = pooled_power_dir
-            self.doppler_pooled = True   # both power + elev pre-pooled
+            self.doppler_pooled = True
+            self.elev_dir       = pooled_elev_dir if _has_pooled_elev else raw_elev_dir
         else:
             self.power_dir      = raw_power_dir
             self.doppler_pooled = False
+            self.elev_dir       = pooled_elev_dir if _has_pooled_elev else raw_elev_dir
 
-        raw_elev_dir    = os.path.join(radar_dir, sf.get('rad_elev', 'rad_elev'))
-        pooled_elev_dir = os.path.join(radar_dir, 'rad_elev_pooled')
-        self.elev_dir   = pooled_elev_dir \
-            if os.path.isdir(pooled_elev_dir) and \
-               len(glob.glob(os.path.join(pooled_elev_dir, '*.npy'))) > 0 \
-            else raw_elev_dir
+        if elev_pool_cfg == 'argmax_gather' and not _has_argmax_elev and not self.argmax_gather_live:
+            print(f"  [WARN] elev_pool=argmax_gather requested but no rad_elev_argmax/ "
+                  f"and no raw rad_power+rad_elev found in {radar_dir} -- "
+                  f"falling back to {os.path.basename(self.elev_dir)}/")
 
         self.power_paths = sorted(glob.glob(os.path.join(self.power_dir, '*.npy')))
         if not self.power_paths:
@@ -166,6 +195,9 @@ class RadarDataset(Dataset):
         except Exception:
             elev = np.zeros_like(power)
 
+        if self.argmax_gather_live and not model.get('use_full_doppler', False):
+            power, elev = self._pool_argmax_gather(power, elev)
+
         power = self._preprocess(power, is_power=True)
         elev  = self._preprocess(elev,  is_power=False)
 
@@ -212,6 +244,26 @@ class RadarDataset(Dataset):
         return radar_tensor, label_tensor
 
     # ── Preprocessing helpers ─────────────────────────────────────────────────
+
+    def _pool_argmax_gather(self, power, elev):
+        """4x Doppler downsample (512->128): power via max, elevation gathered from
+        the same Doppler index where power is maximal (not independently max-pooled).
+        Elevation is an angle -- max-pooling it picks the numerically largest angle in
+        each group, which need not be the angle at the actual detection. Gathering at
+        power's argmax keeps the two channels physically consistent voxel-for-voxel."""
+        if power.ndim == 3 and power.shape[2] == 512:
+            power = power.transpose(2, 0, 1)
+        if elev.ndim == 3 and elev.shape[2] == 512:
+            elev = elev.transpose(2, 0, 1)
+        if power.shape[0] != 512 or elev.shape != power.shape:
+            return power, elev   # not raw 512-bin data -- leave untouched
+        H, W = power.shape[1], power.shape[2]
+        p_blocks = power.reshape(128, 4, H, W)
+        e_blocks = elev.reshape(128, 4, H, W)
+        idx      = p_blocks.argmax(axis=1)
+        power_p  = p_blocks.max(axis=1)
+        elev_p   = np.take_along_axis(e_blocks, idx[:, np.newaxis, :, :], axis=1).squeeze(1)
+        return power_p, elev_p
 
     def _preprocess(self, data, is_power=True):
         # Transpose to (D, H, W) if stored as (H, W, D) — only raw 512-bin files need this

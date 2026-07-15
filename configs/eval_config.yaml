@@ -22,6 +22,14 @@ model:
   use_full_doppler: false
   encoder_out_channels: 64
   num_classes: 64
+  # 'argmax_gather' (default): elevation is read from the same Doppler bin where
+  #   power is maximal, instead of independently max-pooling each channel (which
+  #   would pick the numerically largest angle, not the angle at the detection).
+  #   Uses rad_elev_argmax/ if precomputed, else computes it on the fly from raw
+  #   rad_power/rad_elev. Falls back to 'max' pooling if neither is available.
+  # 'max': legacy independent max-pooling per channel.
+  # 'stride': take every 4th raw Doppler bin directly (no pooling).
+  elev_pool: argmax_gather
 
 
 # ── Dataset paths ─────────────────────────────────────────────────────────────
