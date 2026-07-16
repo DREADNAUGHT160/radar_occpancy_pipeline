@@ -127,7 +127,7 @@ def _build_calib_index(calib_files):
     }
 
 
-def _find_calib_by_radar_frame(calib_index, ts_ms, threshold_ms=100):
+def _find_calib_by_radar_frame(calib_index, ts_ms, threshold_ms=200):
     """Match a DL timestamp against calib files' Radar_frame timestamp (the raw
     radar/CFAR clock) rather than the calib file's own filename timestamp.
 
@@ -136,6 +136,13 @@ def _find_calib_by_radar_frame(calib_index, ts_ms, threshold_ms=100):
     mean gap 16ms (max 72ms) vs mean 94.5ms (max 195ms) for the filename-first
     approach, at the cost of slightly fewer frames getting a box match at all
     (51/109 vs 55/109 on RC019) because Radar_frame values are sparser/offset.
+
+    threshold_ms=200 (dataset-wide check across all 16 RC folders, 1579 calib
+    files): gap distribution is sharply bimodal -- median 15ms for genuine
+    matches vs 1300+ms for calib entries with no nearby rad_power coverage at
+    all. 100ms->200ms recovers 858 vs 829 matches (54.3% vs 52.5%); anything
+    much larger starts accepting stale, physically-meaningless pairings instead
+    of recovering real coverage gaps.
 
     Returns (corners, t_r2l, R_r2l, gap_ms, radar_frame_ts_ms), or
     (None, zeros, eye, None, None) if no calib has a Radar_frame within threshold.
