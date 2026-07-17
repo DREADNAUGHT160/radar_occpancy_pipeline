@@ -28,7 +28,7 @@ def extract(input_dir, output_dir):
     for mat_path in tqdm(mat_files):
         try:
             with h5py.File(mat_path, 'r') as f:
-                ts = int(f['TimeStamp'][0, 0])
+                ts = f['TimeStamp'][0, 0] / 1000.0
 
                 power_path = os.path.join(output_dir, 'rad_power', f'{ts}.npy')
                 elev_path  = os.path.join(output_dir, 'rad_elev',  f'{ts}.npy')
