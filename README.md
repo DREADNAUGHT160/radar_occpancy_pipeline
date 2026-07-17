@@ -80,7 +80,7 @@ python utils/prepool_elev.py --config configs/train_config.yaml
 | Script | Input | Output folder | Method |
 |---|---|---|---|
 | `prepool_doppler.py` | `rad_power/` | `rad_power_pooled/` | Max pool — GPU: `F.max_pool3d` / CPU: numpy max |
-| `prepool_elev.py` | `rad_elev/` | `rad_elev_pooled/` | Controlled by `model.elev_pool` in config (default: `max`) |
+| `elev_pool.py` | `rad_elev/` | `rad_elev_pooled/` | Controlled by `model.elev_pool` in config (default: `max`) |
 
 Each script prints the device it is using at startup. Both fall back to CPU numpy automatically if no GPU is available.
 
