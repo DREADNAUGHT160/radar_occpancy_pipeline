@@ -88,10 +88,11 @@ Each script prints the device it is using at startup. Both fall back to CPU nump
 
 | Value | Behaviour |
 |---|---|
-| `max` *(default)* | `F.max_pool3d` kernel=(4,1,1) — takes peak elevation angle per 4-bin window |
-| `stride` | `arr[::4]` — samples every 4th Doppler bin, preserving the true signed angle |
+| `argmax_gather` *(default for eval, see `configs/eval_config.yaml`)* | Elevation is read from the same Doppler bin where **power** is maximal, instead of independently max-pooling each channel. `RAD_elev` is a sparse, signed channel (~99.6% exactly zero); plain max-pooling always loses to the zero background whenever the real reading is negative, so it silently erases every target below sensor height. `argmax_gather` keeps power and elevation physically consistent voxel-for-voxel. Uses a precomputed `rad_elev_argmax/` folder if present, else computes it live per-frame from raw `rad_power`/`rad_elev`; falls back to `max` with a `[WARN]` log if neither is available. |
+| `max` *(legacy default for training configs)* | `F.max_pool3d` kernel=(4,1,1) — takes the numerically largest elevation value per 4-bin window, independent of power. Systematically erases negative elevation readings (see above). |
+| `stride` | `arr[::4]` — samples every 4th Doppler bin directly, preserving the true signed angle without power dependency, but risks missing the peak if it doesn't land on a sampled index. |
 
-> If you change `elev_pool`, re-run `prepool_elev.py --force` so the pre-pooled files match, then retrain from scratch.
+> If you change `elev_pool`, re-run `prepool_elev.py --force` so the pre-pooled files match, then retrain from scratch. `argmax_gather` does not require `prepool_elev.py` — it computes/loads its own data independently (see `dataset/dataloader.py::_pool_argmax_gather`).
 
 ---
 
@@ -244,7 +245,10 @@ python utils/gen_camera_proj.py --config configs/eval_config.yaml --n_plots 10 \
     --checkpoint checkpoints/<run_id>/best_model.pth
 ```
 
-**Requirement:** `pco/` subfolder must exist inside each RC folder in the prepared dataset (standard layout — contains the camera `.jpg` images referenced in the calib files).
+**Camera images (pco):** by default, looked up at `<base_dir>/<RC>/pco/`. Override with a
+top-level `pco_dir` key in the config yaml, or pass `--pco_dir` on the command line
+(standalone script only) — useful when camera images live outside the prepared dataset
+folder structure.
 
 Output: `<out_dir>/camera_projection/<rc_name>/frame_01_range8.3m.png`, etc.
 
@@ -262,6 +266,8 @@ checkpoints/
 
 verification_output/eval/
   weather_results.csv         AP / P_d / P_fa / CD / density, DL vs CFAR
+  frame_match_log.csv         per-frame sync audit trail: DL<->CFAR/calib
+                               timestamps, gaps, matched/extended type, range band
   thesis_figures/
     <RC_folder>/
       prediction_plots/       3-row mosaic PNGs (radar input, prediction, GT)
@@ -282,7 +288,7 @@ verification_output/eval/
 | `dataset.train / val / test` | Lists of RC folder names |
 | `dataset.batch_size` | Start at 6; auto-halved on OOM |
 | `model.doppler_pool` | `max` (default) / `mean` / `stride` / `torch_max` |
-| `model.elev_pool` | `max` (default) / `stride` — elevation Doppler pooling method |
+| `model.elev_pool` | `max` (default for training) / `stride` / `argmax_gather` — elevation Doppler pooling method, see Step 1c |
 | `training.epochs` | Number of training epochs |
 | `training.loss` | `weighted_bce` (default) — see [PIPELINE_OVERVIEW.md](PIPELINE_OVERVIEW.md) for others |
 | `training.pos_weight` | Weight for occupied voxels (default 10.0) |
@@ -294,6 +300,7 @@ verification_output/eval/
 |---|---|
 | `checkpoint` | Path to `best_model.pth` to evaluate |
 | `base_dir` | Root of the prepared dataset |
+| `model.elev_pool` | `argmax_gather` (default) / `max` / `stride` — must match what the checkpoint was trained with, see Step 1c |
 | `eval_mode` | `basic` (quick IoU check) / `weather` (full thesis eval) |
 | `eval_metrics` | `true` to compute AP/P_d/P_fa/CD; `false` to skip and only generate figures |
 | `eval_splits.clear/fog/rain` | RC folder lists per weather condition; empty lists are skipped |
