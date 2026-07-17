@@ -99,7 +99,7 @@ def _parse_calib_file(txt_path):
     return corners, r2l, R_r2l, radar_frame_ts
 
 
-def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=100):
+def _find_calib(txt_files, txt_ts, ts_ms, threshold_ms=200):
     """Return (corners, t_r2l, R_r2l, calib_delta_ms, radar_frame_ts_ms) for nearest
     calib within threshold, else (None, zeros, eye, actual_delta_ms_or_None, None)."""
     if len(txt_ts) == 0:
