@@ -94,6 +94,27 @@ Each script prints the device it is using at startup. Both fall back to CPU nump
 
 > If you change `elev_pool`, re-run `prepool_elev.py --force` so the pre-pooled files match, then retrain from scratch. `argmax_gather` does not require `prepool_elev.py` — it computes/loads its own data independently (see `dataset/dataloader.py::_pool_argmax_gather`).
 
+**`elev_pool.py` (recommended precompute tool):** a standalone script (repo root)
+that precomputes elevation pooling directly, without going through
+`prepool_elev.py`/`model.elev_pool` config at all:
+
+```bash
+python elev_pool.py --base_dir /path/to/radar_dataset
+```
+
+For each 4-bin Doppler group, it gathers elevation from the bin with the largest
+**|elevation| magnitude** (`np.abs(e_blocks).argmax(axis=1)`) rather than from
+power's peak bin — `RAD_elev` is sparse enough (~99.6% exactly zero) that
+elevation's own magnitude reliably identifies the real detection without needing
+power at all. This is a **different algorithm** from `argmax_gather` above (which
+uses power's argmax instead) — both solve the same negative-elevation-erasure
+problem, via different signals. Output goes to `rad_elev_pooled/`, the same
+folder `prepool_elev.py` writes to — **running this replaces (deletes then
+rewrites) whatever pooling method was there before**, so check which method
+last populated `rad_elev_pooled/` for a given RC folder before assuming its
+contents. Works on either a single RC folder directly (pass its path) or a
+root directory containing multiple `RC*` folders.
+
 ---
 
 ## Step 2 — Train
