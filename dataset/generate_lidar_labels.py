@@ -54,8 +54,10 @@ def extract_ts_s(filepath):
     stem = os.path.basename(filepath)
     stem = re.sub(r'\.(npy|h5)$', '', stem)
     val  = float(re.search(r'[\d.]+', stem).group(0))
-    # LiDAR .h5 stems are already decimal seconds — keep as-is
-    # Radar .npy stems are integer ms — divide by 1000 to get seconds
+    # Unit-detect by magnitude: real epoch timestamps in this dataset's era are
+    # ~1.65e9 as decimal seconds or ~1.65e12 as integer ms -- a >16x margin on
+    # either side of this threshold, so it's safe regardless of which format a
+    # given filename (radar .npy or LiDAR .h5) happens to use.
     return val if val < 1e11 else val / 1000.0
 
 
