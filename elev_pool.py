@@ -1,10 +1,14 @@
 """
 Precompute argmax-gathered elevation pooling (512 -> 128) for all RC folders.
 
-For each range-azimuth cell, selects the elevation angle from the Doppler bin
-where POWER is maximal — keeping both channels physically consistent. This
-replaces the default max-pool which picks the numerically largest elevation
-angle regardless of where the actual detection is.
+For each 4-bin Doppler group, selects the elevation value with the largest
+|magnitude| — not power's peak bin. RAD_elev is sparse enough (~99.6% exactly
+zero) that elevation's own magnitude reliably identifies the real detection
+without needing power at all; power files are only used to find which frames
+have a paired elev file, never loaded into the pooling itself. This replaces
+the default max-pool, which always keeps the numerically largest raw value in
+each group — since zero background always beats a negative detection, max-pool
+silently erases every negative elevation reading (targets below sensor height).
 
 Usage:
     python elev_pool.py --base_dir /path/to/radar_dataset
