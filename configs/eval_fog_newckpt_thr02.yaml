@@ -1,0 +1,58 @@
+checkpoint: 'C:/Users/evinb/Downloads/best_model_new.pth'
+
+model:
+  name: resnet18_radar
+  in_channels: 2
+  doppler_depth: 128
+  use_full_doppler: false
+  encoder_out_channels: 64
+  num_classes: 64
+  elev_pool: argmax_gather
+
+base_dir: 'F:/evin/radar_dataset'
+
+raw_data_dir: ''
+cfar_src_subfolder: 'data/radar'
+saveroad_dir: 'D:/thesis data/SAVEROAD_DataLoader_main'
+
+subfolders:
+  rad_power: rad_power
+  rad_elev:  rad_elev
+  labels:    labels
+  pco:       pco
+  calib:     calib
+  cfar:      cfar
+
+normalization:
+  enable: true
+  auto_normalization: false
+  power_log_transform: true
+  power_min_val: -100.0
+  power_max_val: -31.7
+  normalize_elevation: false
+  elevation_max_angle: 0.7854
+  mask_elevation: false
+  power_threshold: -60.0
+
+eval_splits:
+  clear: []
+  fog:   ['fog/RC011', 'fog/RC024', 'fog/RC043', 'fog/RC054']
+  rain:  []
+
+eval_mode: weather
+eval_metrics: true
+
+basic:
+  threshold: 0.2
+
+weather:
+  threshold: 0.2
+
+thesis_plots:
+  enable:            false
+  n_plots:           5
+  threshold:         0.2
+  raw_prediction:    false
+  camera_projection: false
+
+out_dir: verification_output/eval_fog_newckpt_thr02

@@ -101,6 +101,14 @@ model:
   #   torch_max - PyTorch F.max_pool3d (kernel=(4,1,1)) — matches original model_pipeline
   doppler_pool: max
 
+  # Elevation 4x downsampling method (512 -> 128):
+  #   argmax_gather - gather elevation from the Doppler bin where power is maximal (recommended)
+  #                   keeps power and elevation physically consistent voxel-for-voxel
+  #   stride        - simple subsampling [::4]
+  #   max           - numpy max per 4-bin window (picks largest angle, ignores power — avoid)
+  # Requires raw rad_power/ and rad_elev/ folders (512-bin). No precomputation needed.
+  elev_pool: argmax_gather
+
 training:
   epochs: 10
   lr: 0.001

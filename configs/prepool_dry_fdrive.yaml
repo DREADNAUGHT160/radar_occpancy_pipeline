@@ -1,0 +1,5 @@
+dataset:
+  base_dir: 'F:/evin/radar_dataset/dry'
+  train: ['RC006', 'RC015']
+  val:   ['RC22']
+  test:  ['RC25']

@@ -58,6 +58,11 @@ class RadarDataset(Dataset):
             self.elev_dir       = argmax_elev_dir
             self.power_dir      = pooled_power_dir if _has_pooled_power else raw_power_dir
             self.doppler_pooled = _has_pooled_power
+        elif elev_pool_cfg == 'argmax_gather' and _has_pooled_elev:
+            # elev_pool.py (power-argmax) wrote to rad_elev_pooled/ -- treat as precomputed source.
+            self.elev_dir       = pooled_elev_dir
+            self.power_dir      = pooled_power_dir if _has_pooled_power else raw_power_dir
+            self.doppler_pooled = _has_pooled_power
         elif elev_pool_cfg == 'argmax_gather' and _has_raw_power and _has_raw_elev:
             # Live path: no precomputed folder, but raw 512-bin data is available --
             # compute argmax-gather per-frame in __getitem__.
@@ -74,7 +79,7 @@ class RadarDataset(Dataset):
             self.doppler_pooled = False
             self.elev_dir       = pooled_elev_dir if _has_pooled_elev else raw_elev_dir
 
-        if elev_pool_cfg == 'argmax_gather' and not _has_argmax_elev and not self.argmax_gather_live:
+        if elev_pool_cfg == 'argmax_gather' and not _has_argmax_elev and not _has_pooled_elev and not self.argmax_gather_live:
             print(f"  [WARN] elev_pool=argmax_gather requested but no rad_elev_argmax/ "
                   f"and no raw rad_power+rad_elev found in {radar_dir} -- "
                   f"falling back to {os.path.basename(self.elev_dir)}/")

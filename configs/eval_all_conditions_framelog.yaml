@@ -1,0 +1,55 @@
+checkpoint: 'E:/checkpoints/20260515_112512/best_model.pth'
+
+model:
+  name: resnet18_radar
+  in_channels: 2
+  doppler_depth: 128
+  use_full_doppler: false
+  encoder_out_channels: 64
+  num_classes: 64
+  elev_pool: argmax_gather
+
+base_dir: 'E:/DataMasters/radar_dataset'
+
+raw_data_dir: ''
+cfar_src_subfolder: 'data/radar'
+saveroad_dir: 'D:/thesis data/SAVEROAD_DataLoader_main'
+
+subfolders:
+  rad_power: rad_power
+  rad_elev:  rad_elev
+  labels:    labels
+  pco:       pco
+  calib:     calib
+  cfar:      cfar
+
+normalization:
+  enable: true
+  auto_normalization: false
+  power_log_transform: true
+  power_min_val: -100.0
+  power_max_val: -31.7
+  normalize_elevation: false
+  elevation_max_angle: 0.7854
+  mask_elevation: false
+  power_threshold: -60.0
+
+eval_splits:
+  clear: ['dry/RC006', 'dry/RC015', 'dry/RC22', 'dry/RC25']
+  fog:   ['fog/RC011', 'fog/RC024', 'fog/RC043', 'fog/RC054']
+  rain:  ['rain_32/RC028', 'rain_32/RC06', 'rain_32/RC13', 'rain_32/RC17',
+          'rain_98/RC033', 'rain_98/RC037', 'rain_98/RC041', 'rain_98/RC23']
+
+eval_mode: weather
+eval_metrics: true
+
+basic:
+  threshold: 0.4
+
+weather:
+  threshold: 0.4
+
+thesis_plots:
+  enable: false
+
+out_dir: verification_output/eval_all_framelog

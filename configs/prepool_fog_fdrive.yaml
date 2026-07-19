@@ -1,0 +1,5 @@
+dataset:
+  base_dir: 'F:/evin/radar_dataset'
+  train: ['fog/RC011', 'fog/RC024']
+  val:   ['fog/RC043']
+  test:  ['fog/RC054']

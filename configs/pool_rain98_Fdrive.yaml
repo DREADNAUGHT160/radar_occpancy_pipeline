@@ -1,0 +1,12 @@
+dataset:
+  base_dir: 'F:/evin/radar_dataset'
+  train:
+    - rain_98/RC23
+    - rain_98/RC033
+    - rain_98/RC037
+    - rain_98/RC041
+  val:  []
+  test: []
+
+model:
+  elev_pool: argmax_gather

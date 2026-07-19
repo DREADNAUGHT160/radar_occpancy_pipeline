@@ -1,0 +1,9 @@
+dataset:
+  base_dir: 'E:/DataMasters/radar_dataset'
+  train:
+    - rain_98/RC23
+    - rain_98/RC033
+    - rain_98/RC037
+    - rain_98/RC041
+  val:  []
+  test: []

@@ -1,0 +1,6 @@
+dataset:
+  base_dir: 'F:/evin/radar_dataset'
+  train:
+    - rain_32/RC13
+  val:  []
+  test: []
